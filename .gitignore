@@ -1,0 +1,24 @@
+# Anchor build artifacts
+.anchor
+test-ledger/
+
+target
+**/target
+
+# Node dependencies (if using JS/TS for testing or frontend)
+node_modules
+
+# Environment files
+.env
+.env.*
+
+# Test coverage
+coverage
+
+# IDE / Editor
+.DS_Store
+.vscode
+.idea
+
+# Optional: Anchor-generated IDL if you want to regenerate it every time
+# idl/
