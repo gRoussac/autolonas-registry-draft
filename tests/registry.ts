@@ -1132,7 +1132,7 @@ describe('registry', () => {
     });
   });
 
-  describe('Registry Ownership and Drainer Tests', () => {
+  describe('Registry Drainer Tests', () => {
     let registryAccount: anchor.web3.Keypair;
     let user: anchor.web3.Keypair;
     let newOwner: anchor.web3.PublicKey;
@@ -1162,26 +1162,6 @@ describe('registry', () => {
         })
         .signers([user, registryAccount])
         .rpc();
-    });
-
-    it('Changes the owner of the registry', async function () {
-      // Change the owner using the change_owner function
-      await program.methods
-        .changeOwner(newOwner)
-        .accounts({
-          registry: registryAccount.publicKey,
-          user: user.publicKey,
-        })
-        .signers([user])
-        .rpc();
-
-      // Fetch the updated registry account
-      const registry = await program.account.serviceRegistry.fetch(
-        registryAccount.publicKey
-      );
-
-      // Check that the owner has been updated correctly
-      expect(registry.owner.toBase58()).to.equal(newOwner.toBase58());
     });
 
     it('Changes the drainer of the registry', async function () {

@@ -102,7 +102,7 @@ pub mod registry {
 
     use crate::{
         error::ErrorCode,
-        events::{CreateServiceEvent, DrainerUpdatedEvent, OwnerUpdatedEvent, UpdateServiceEvent},
+        events::{CreateServiceEvent, DrainerUpdatedEvent, UpdateServiceEvent},
     };
 
     use super::*;
@@ -404,27 +404,6 @@ pub mod registry {
 
         Ok(())
     }
-
-    pub fn change_owner(ctx: Context<ChangeOwner>, new_owner: Pubkey) -> Result<()> {
-        let registry = &mut ctx.accounts.registry;
-
-        // Only current owner can call
-        if ctx.accounts.user.key() != registry.owner {
-            return Err(Error::from(ProgramError::IllegalOwner));
-        }
-
-        // Cannot set zero address
-        if new_owner == Pubkey::default() {
-            return Err(ProgramError::InvalidArgument.into());
-        }
-
-        // Update the owner
-        registry.owner = new_owner;
-
-        emit!(OwnerUpdatedEvent { new_owner });
-
-        Ok(())
-    }
 }
 
 impl ServiceRegistry {
@@ -558,13 +537,6 @@ pub struct RegisterAgents<'info> {
 
 #[derive(Accounts)]
 pub struct ChangeDrainer<'info> {
-    #[account(mut)]
-    pub registry: Account<'info, ServiceRegistry>,
-    pub user: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct ChangeOwner<'info> {
     #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
     pub user: Signer<'info>,

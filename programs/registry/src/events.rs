@@ -16,8 +16,3 @@ pub struct UpdateServiceEvent {
 pub struct DrainerUpdatedEvent {
     pub new_drainer: Pubkey,
 }
-
-#[event]
-pub struct OwnerUpdatedEvent {
-    pub new_owner: Pubkey,
-}
