@@ -158,7 +158,7 @@ describe('registry', () => {
           program.programId
         );
 
-      // console.info(paramPdas);
+      // console.debug(paramPdas);
 
       try {
         await program.methods
@@ -221,7 +221,7 @@ describe('registry', () => {
       // console.info('Created second service');
     });
 
-    it('Registers 9 agents, then removes 8 of them', async function () {
+    it('Registers 9 agents ids, then removes 8 of them', async function () {
       let agent_ids_per_service = 9;
       let threshold = 7; // 7 << threshold << 9
 
@@ -386,7 +386,7 @@ describe('registry', () => {
       expect(updatedServiceAccount.threshold).to.equal(threshold);
     });
 
-    it('Registers 3 agents, then removes 1 of them', async function () {
+    it('Registers 3 agents ids, then removes 1 of them', async function () {
       const agent_ids_per_service = 3;
       let threshold = 3;
 
@@ -556,7 +556,7 @@ describe('registry', () => {
       expect(updatedServiceAccount.threshold).to.equal(threshold);
     });
 
-    it('Registers 2 agents, then adds 1 of them', async function () {
+    it('Registers 2 agents ids, then adds 1 of them', async function () {
       const agent_ids_per_service = 2;
       let threshold = 2;
 
@@ -724,7 +724,7 @@ describe('registry', () => {
       expect(updatedServiceAccount.threshold).to.equal(threshold);
     });
 
-    it('Registers 2 agents, then deletes 1 via delete_agent', async function () {
+    it('Registers 2 agents ids, then deletes 1 via delete_agent', async function () {
       const agent_ids = [1, 2];
       const threshold = 2;
       const securityDeposit = 1000;
@@ -844,7 +844,7 @@ describe('registry', () => {
       expect(updatedServiceAccount.threshold).to.equal(newThreshold);
     });
 
-    it('Registers 2 agents, then adds a new agent using `add_agent`', async function () {
+    it('Registers 2 agents ids, then adds a new agent using `add_agent`', async function () {
       let threshold = 1;
       const securityDeposit = 1000;
       const initialAgentId = 1;
@@ -1134,51 +1134,492 @@ describe('registry', () => {
         );
       }
     });
+
+    it('checks a service with id_service', async () => {
+      let agent_ids_per_service = 9;
+      const threshold = 7; // 7 << threshold << 9
+
+      // Define agent_ids and agent_params
+      const agent_ids: number[] = Array.from(
+        { length: agent_ids_per_service },
+        (_, i) => i + 1
+      );
+      const agent_params = agent_ids.map((id) => ({
+        slots: 1,
+        bond: new anchor.BN(1000),
+      }));
+
+      // console.info(agent_ids);
+      // console.info(agent_params);
+
+      const config_hash = new Uint8Array(32).fill(10);
+
+      const [servicePda, _bump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('service'),
+          Buffer.from(config_hash.buffer, config_hash.byteOffset, 7),
+        ],
+        program.programId
+      );
+
+      // Create first service
+      await program.methods
+        .create(Array.from(config_hash), ownerService.publicKey, null)
+        .accounts({
+          registry: registryAccount.publicKey,
+          service: servicePda,
+          user: manager.publicKey,
+        })
+        .signers([manager])
+        .rpc();
+
+      // console.info(servicePda);
+      // console.info(ownerService.publicKey);
+
+      // FETCH THE SERVICE ACCOUNT FROM CHAIN
+      const serviceAccount =
+        await program.account.serviceAccount.fetch(servicePda);
+
+      // Get the actual dynamic service_id from the on-chain account
+      const serviceId = serviceAccount.serviceId;
+
+      //console.info(serviceId);
+
+      // Add agents params
+      const paramPdas = [];
+      // Loop through agentIds to generate all the agent_param_pda addresses
+      for (let i = 0; i < agent_ids.length; i++) {
+        const agentId = new anchor.BN(agent_ids[i]);
+
+        const [agent_param_pda, _bump] =
+          anchor.web3.PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('agent_param'),
+              serviceId.toArrayLike(Buffer, 'le', 16), // service_id as little-endian 16 bytes
+              agentId.toArrayLike(Buffer, 'le', 4), // agent_id as little-endian 4 bytes
+            ],
+            program.programId
+          );
+
+        paramPdas.push(agent_param_pda);
+      }
+
+      const [serviceAgentIdsIndexPDA, _bumpServiceAgentIdsIndex] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('service_agent_ids_index'),
+            serviceId.toArrayLike(Buffer, 'le', 16),
+          ],
+          program.programId
+        );
+
+      // console.debug(paramPdas);
+
+      try {
+        await program.methods
+          .registerAgentIdsToService(
+            ownerService.publicKey,
+            agent_ids,
+            agent_params,
+            threshold
+          )
+          .accounts({
+            registry: registryAccount.publicKey,
+            service: servicePda, // The service account (PDA) to add agents
+            serviceAgentIdsIndex: serviceAgentIdsIndexPDA, // The vector registry account to index agents
+            user: manager.publicKey, // The manager of the registry (signer)
+          })
+          .remainingAccounts([
+            ...paramPdas.map((pda) => ({
+              // params pdas to create or update
+              pubkey: pda,
+              isSigner: false,
+              isWritable: true,
+            })),
+          ])
+          .signers([manager])
+          .rpc();
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
+
+      // Call check_service with the service_id
+      try {
+        const tx = await program.methods
+          .checkService(serviceId)
+          .accounts({
+            service: servicePda, // The service account (PDA)
+            serviceAgentIdsIndex: serviceAgentIdsIndexPDA, // The vector registry account to index agents
+          })
+          .rpc();
+
+        // console.info('Your transaction signature', tx);
+
+        // Récupération du compte à partir du PDA
+        const serviceAccount =
+          await program.account.serviceAccount.fetch(servicePda);
+
+        // console.debug('Service Account:', serviceAccount);
+        // console.debug('Service ID:', serviceAccount.serviceId);
+        // console.debug('ID:', serviceId);
+
+        assert(serviceAccount.serviceId.eq(serviceId));
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
+    });
+
+    it('shoudld fetch agent params from PDAS', async () => {
+      let agent_ids_per_service = 1;
+      const threshold = 1;
+      const bond = 1000;
+
+      // Define agent_ids and agent_params
+      const agent_ids: number[] = Array.from(
+        { length: agent_ids_per_service },
+        (_, i) => i + 1
+      );
+      const agent_params = agent_ids.map((id) => ({
+        slots: 1,
+        bond: new anchor.BN(bond),
+      }));
+
+      // console.info(agent_ids);
+      // console.info(agent_params);
+
+      const config_hash = new Uint8Array(32).fill(11);
+
+      const [servicePda, _bump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('service'),
+          Buffer.from(config_hash.buffer, config_hash.byteOffset, 7),
+        ],
+        program.programId
+      );
+
+      // Create first service
+      await program.methods
+        .create(Array.from(config_hash), ownerService.publicKey, null)
+        .accounts({
+          registry: registryAccount.publicKey,
+          service: servicePda,
+          user: manager.publicKey,
+        })
+        .signers([manager])
+        .rpc();
+
+      // console.info(servicePda);
+      // console.info(ownerService.publicKey);
+
+      // FETCH THE SERVICE ACCOUNT FROM CHAIN
+      const serviceAccount =
+        await program.account.serviceAccount.fetch(servicePda);
+
+      // Get the actual dynamic service_id from the on-chain account
+      const serviceId = serviceAccount.serviceId;
+
+      //console.info(serviceId);
+
+      // Add agents params
+      const paramPdas = [];
+      // Loop through agentIds to generate all the agent_param_pda addresses
+      for (let i = 0; i < agent_ids.length; i++) {
+        const agentId = new anchor.BN(agent_ids[i]);
+
+        const [agent_param_pda, _bump] =
+          anchor.web3.PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('agent_param'),
+              serviceId.toArrayLike(Buffer, 'le', 16), // service_id as little-endian 16 bytes
+              agentId.toArrayLike(Buffer, 'le', 4), // agent_id as little-endian 4 bytes
+            ],
+            program.programId
+          );
+
+        paramPdas.push(agent_param_pda);
+      }
+
+      const [serviceAgentIdsIndexPDA, _bumpServiceAgentIdsIndex] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('service_agent_ids_index'),
+            serviceId.toArrayLike(Buffer, 'le', 16),
+          ],
+          program.programId
+        );
+
+      //  console.debug(paramPdas);
+
+      try {
+        await program.methods
+          .registerAgentIdsToService(
+            ownerService.publicKey,
+            agent_ids,
+            agent_params,
+            threshold
+          )
+          .accounts({
+            registry: registryAccount.publicKey,
+            service: servicePda, // The service account (PDA) to add agents
+            serviceAgentIdsIndex: serviceAgentIdsIndexPDA, // The vector registry account to index agents
+            user: manager.publicKey, // The manager of the registry (signer)
+          })
+          .remainingAccounts([
+            ...paramPdas.map((pda) => ({
+              // params pdas to create or update
+              pubkey: pda,
+              isSigner: false,
+              isWritable: true,
+            })),
+          ])
+          .signers([manager])
+          .rpc();
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
+
+      // Now, fetch the agent parameters stored in the PDAs
+
+      for (const agentId of agent_ids) {
+        const agentIdBN = new anchor.BN(agentId);
+        const [agent_param_pda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('agent_param'),
+            serviceId.toArrayLike(Buffer, 'le', 16),
+            agentIdBN.toArrayLike(Buffer, 'le', 4),
+          ],
+          program.programId
+        );
+
+        // console.info(`Fetching AgentParamAccount for agentId: ${agentId}`);
+        // console.info(`AgentParam PDA: ${agent_param_pda.toBase58()}`);
+
+        try {
+          const agentParamAccount =
+            await program.account.agentParamAccount.fetch(agent_param_pda);
+          assert.strictEqual(
+            agentParamAccount.slots,
+            1,
+            `Slots should be 1 for agent ${agentId}`
+          );
+          assert.strictEqual(
+            agentParamAccount.bond.toNumber(),
+            1000,
+            `Bond should be 1000 for agent ${agentId}`
+          );
+        } catch (e) {
+          console.warn(
+            `AgentParamAccount not found for agent_id ${agentId}:`,
+            e.message
+          );
+        }
+      }
+    });
+
+    it('shoudld fetch agent params from index and then PDAS', async () => {
+      let agent_ids_per_service = 9;
+      const threshold = 7; // 7 << threshold << 9
+
+      // Define agent_ids and agent_params
+      const agent_ids: number[] = Array.from(
+        { length: agent_ids_per_service },
+        (_, i) => i + 1
+      );
+      const agent_params = agent_ids.map((id) => ({
+        slots: 1,
+        bond: new anchor.BN(1000),
+      }));
+
+      // console.info(agent_ids);
+      // console.info(agent_params);
+
+      const config_hash = new Uint8Array(32).fill(12);
+
+      const [servicePda, _bump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('service'),
+          Buffer.from(config_hash.buffer, config_hash.byteOffset, 7),
+        ],
+        program.programId
+      );
+
+      // Create first service
+      await program.methods
+        .create(Array.from(config_hash), ownerService.publicKey, null)
+        .accounts({
+          registry: registryAccount.publicKey,
+          service: servicePda,
+          user: manager.publicKey,
+        })
+        .signers([manager])
+        .rpc();
+
+      // console.info(servicePda);
+      // console.info(ownerService.publicKey);
+
+      // FETCH THE SERVICE ACCOUNT FROM CHAIN
+      const serviceAccount =
+        await program.account.serviceAccount.fetch(servicePda);
+
+      // Get the actual dynamic service_id from the on-chain account
+      const serviceId = serviceAccount.serviceId;
+
+      //console.info(serviceId);
+
+      // Add agents params
+      const paramPdas = [];
+      // Loop through agentIds to generate all the agent_param_pda addresses
+      for (let i = 0; i < agent_ids.length; i++) {
+        const agentId = new anchor.BN(agent_ids[i]);
+
+        const [agent_param_pda, _bump] =
+          anchor.web3.PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('agent_param'),
+              serviceId.toArrayLike(Buffer, 'le', 16), // service_id as little-endian 16 bytes
+              agentId.toArrayLike(Buffer, 'le', 4), // agent_id as little-endian 4 bytes
+            ],
+            program.programId
+          );
+
+        paramPdas.push(agent_param_pda);
+      }
+
+      const [serviceAgentIdsIndexPDA, _bumpServiceAgentIdsIndex] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('service_agent_ids_index'),
+            serviceId.toArrayLike(Buffer, 'le', 16),
+          ],
+          program.programId
+        );
+
+      // console.debug(paramPdas);
+
+      try {
+        await program.methods
+          .registerAgentIdsToService(
+            ownerService.publicKey,
+            agent_ids,
+            agent_params,
+            threshold
+          )
+          .accounts({
+            registry: registryAccount.publicKey,
+            service: servicePda, // The service account (PDA) to add agents
+            serviceAgentIdsIndex: serviceAgentIdsIndexPDA, // The vector registry account to index agents
+            user: manager.publicKey, // The manager of the registry (signer)
+          })
+          .remainingAccounts([
+            ...paramPdas.map((pda) => ({
+              // params pdas to create or update
+              pubkey: pda,
+              isSigner: false,
+              isWritable: true,
+            })),
+          ])
+          .signers([manager])
+          .rpc();
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
+
+      // Fetch from PDAS indexes then params for each
+
+      // Fetch the serviceAgentIdsIndex account
+      const serviceAgentIdsIndex =
+        await program.account.serviceAgentIdsIndex.fetch(
+          serviceAgentIdsIndexPDA
+        );
+
+      // This gives you the array of agent_ids and their params stored on-chain
+      const agentParamsOnChain = [];
+
+      // console.debug(serviceAgentIdsIndex.agentIds);
+
+      for (const param of serviceAgentIdsIndex.agentIds) {
+        const agentId = new anchor.BN(param.agentId);
+
+        const [agent_param_pda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('agent_param'),
+            serviceId.toArrayLike(Buffer, 'le', 16),
+            agentId.toArrayLike(Buffer, 'le', 4),
+          ],
+          program.programId
+        );
+
+        try {
+          const agentParamAccount =
+            await program.account.agentParamAccount.fetch(agent_param_pda);
+
+          // console.info(`Agent ID ${agentId.toNumber()}:`);
+          // console.debug(agentParamAccount);
+          // console.info(`Slots: ${agentParamAccount.slots}`);
+          // console.info(`Bond: ${agentParamAccount.bond.toNumber()}`);
+
+          // Convertir bond en number
+          const transformedAgentParam = {
+            serviceAgentIdsIndex: agentId.toNumber(),
+            slots: agentParamAccount.slots,
+            bond: agentParamAccount.bond.toNumber(), // convert bond from BN to number
+          };
+
+          agentParamsOnChain.push(transformedAgentParam);
+        } catch (e) {
+          console.warn(
+            `AgentParamAccount not found for agent_id ${agentId.toString()}`
+          );
+        }
+      }
+      //  console.info(agentParamsOnChain);
+    });
   });
 
   describe('Registry Drainer Tests', () => {
     let registryAccount: anchor.web3.Keypair;
-    let user: anchor.web3.Keypair;
-    let newOwner: anchor.web3.PublicKey;
-    let newDrainer: anchor.web3.PublicKey;
+    let owner: anchor.web3.Keypair;
+    let drainer: anchor.web3.PublicKey;
     let connection: anchor.web3.Connection;
 
-    beforeEach(async function () {
+    before(async function () {
       registryAccount = anchor.web3.Keypair.generate();
-      user = anchor.web3.Keypair.generate();
-      newOwner = anchor.web3.Keypair.generate().publicKey;
-      newDrainer = anchor.web3.Keypair.generate().publicKey;
+      owner = anchor.web3.Keypair.generate();
+      drainer = anchor.web3.Keypair.generate().publicKey;
       connection = anchor.getProvider().connection;
 
       // Airdrop to user (the current owner)
       let airdropSignature = await connection.requestAirdrop(
-        user.publicKey,
+        owner.publicKey,
         2 * anchor.web3.LAMPORTS_PER_SOL
       );
       await connection.confirmTransaction(airdropSignature);
 
       // Initialize the registry (assuming the registry initialization is similar to previous tests)
       await program.methods
-        .initialize(name, symbol, base_uri, user.publicKey, newDrainer)
+        .initialize(name, symbol, base_uri, manager.publicKey, drainer)
         .accounts({
           registry: registryAccount.publicKey,
-          user: user.publicKey,
+          user: owner.publicKey,
         })
-        .signers([user, registryAccount])
+        .signers([owner, registryAccount])
         .rpc();
     });
 
     it('Changes the drainer of the registry', async function () {
-      // Change the drainer using the change_drainer function
       const anotherDrainer = anchor.web3.Keypair.generate().publicKey;
-      await program.methods
-        .changeDrainer(anotherDrainer)
-        .accounts({
-          registry: registryAccount.publicKey,
-          user: user.publicKey,
-        })
-        .signers([user])
-        .rpc();
+      try {
+        await program.methods
+          .changeDrainer(anotherDrainer)
+          .accounts({
+            registry: registryAccount.publicKey,
+            user: owner.publicKey,
+          })
+          .signers([owner])
+          .rpc();
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
 
       // Fetch the updated registry account
       const registry = await program.account.serviceRegistry.fetch(

@@ -1,6 +1,8 @@
+use anchor_lang::AccountDeserialize;
 use anchor_lang::{
     prelude::*,
     solana_program::{program::invoke_signed, system_instruction},
+    Discriminator,
 };
 
 pub mod error;
@@ -77,7 +79,7 @@ pub struct AgentParamAccount {
 }
 
 impl AgentParamAccount {
-    pub const LEN: usize = 8 + 16 + 4 + 4 + 16;
+    pub const LEN: usize = 8 + 4 + 4 + 16;
 }
 
 #[account]
@@ -313,6 +315,9 @@ pub mod registry {
                     *program_id,
                     ErrorCode::InvalidAccountOwner
                 );
+                // let discriminator = <AgentParamAccount as Discriminator>::DISCRIMINATOR;
+                // let mut data = agent_param_account_info.try_borrow_mut_data()?;
+                // data[..8].copy_from_slice(discriminator);
             }
 
             let mut agent_param_data: Account<AgentParamAccount> =
@@ -341,6 +346,16 @@ pub mod registry {
                 &mut service_agent_ids_index.agent_ids,
                 (*agent_param_data).clone(),
             );
+
+            let mut data = agent_param_account_info.try_borrow_mut_data()?;
+
+            // ! Write discriminator, this is important to retrieve the account later
+            let discriminator =
+                &anchor_lang::solana_program::hash::hash("account:AgentParamAccount".as_bytes())
+                    .to_bytes()[..8];
+            data[..8].copy_from_slice(discriminator);
+
+            agent_param_data.serialize(&mut &mut data[8..])?;
         }
 
         // === Recompute `new_max_num_agent_instances` and `new_security_deposit` ===
@@ -412,6 +427,45 @@ pub mod registry {
 
         emit!(DrainerUpdatedEvent { new_drainer });
 
+        Ok(())
+    }
+
+    pub fn check_service(ctx: Context<CheckService>, service_id: u128) -> Result<()> {
+        let service_account = &ctx.accounts.service;
+        // Find the Service Account PDA
+        let (service_pda, _bump) = Pubkey::find_program_address(
+            &[b"service", &service_account.config_hash[..7]],
+            ctx.program_id,
+        );
+
+        // Use the service PDA to load the service account
+        // Ensure the service account is the expected one
+        require!(service_account.key() == service_pda, ErrorCode::InvalidPda);
+        require_eq!(service_account.service_id, service_id);
+
+        let service_agent_ids_index = &mut ctx.accounts.service_agent_ids_index;
+
+        let (expected_pda, _bump) = Pubkey::find_program_address(
+            &[b"service_agent_ids_index", &service_id.to_le_bytes()],
+            ctx.program_id,
+        );
+
+        require!(
+            service_agent_ids_index.key() == expected_pda,
+            ErrorCode::InvalidPda
+        );
+
+        require!(
+            !service_agent_ids_index.agent_ids.is_empty(),
+            ErrorCode::InvalidServiceAgentPda
+        );
+
+        Ok(())
+    }
+
+    pub fn dummy_include_agent_param_account(
+        _ctx: Context<DummyContextForAgentParam>,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -549,5 +603,23 @@ pub struct RegisterAgentIdsToService<'info> {
 pub struct ChangeDrainer<'info> {
     #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
+    #[account(mut, address = registry.owner)]
     pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CheckService<'info> {
+    #[account(mut)]
+    pub service: Account<'info, ServiceAccount>,
+
+    #[account(
+        seeds = [b"service_agent_ids_index", &service.service_id.to_le_bytes()[..]],
+        bump,
+    )]
+    pub service_agent_ids_index: Account<'info, ServiceAgentIdsIndex>,
+}
+
+#[derive(Accounts)]
+pub struct DummyContextForAgentParam<'info> {
+    pub agent_param_account: Account<'info, AgentParamAccount>,
 }
