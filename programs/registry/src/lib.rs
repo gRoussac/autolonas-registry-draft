@@ -102,7 +102,9 @@ pub mod registry {
 
     use crate::{
         error::ErrorCode,
-        events::{CreateServiceEvent, DrainerUpdatedEvent, UpdateServiceEvent},
+        events::{
+            CreateServiceEvent, DrainerUpdatedEvent, RegisterAgentIdsEvent, UpdateServiceEvent,
+        },
     };
 
     use super::*;
@@ -230,8 +232,8 @@ pub mod registry {
         Ok(())
     }
 
-    pub fn register_agents<'info>(
-        ctx: Context<'_, '_, 'info, 'info, RegisterAgents<'info>>,
+    pub fn register_agent_ids_to_service<'info>(
+        ctx: Context<'_, '_, 'info, 'info, RegisterAgentIdsToService<'info>>,
         service_owner: Pubkey,
         agent_ids: Vec<u32>,
         agent_params: Vec<AgentParams>,
@@ -356,11 +358,19 @@ pub mod registry {
 
         ServiceRegistry::validate_threshold(service, threshold)?;
 
+        // Emit the event with updated service data
+        emit!(RegisterAgentIdsEvent {
+            service_id: service.service_id,
+            agent_ids,
+            max_num_agent_instances: new_max_num_agent_instances,
+            security_deposit: new_security_deposit,
+        });
+
         Ok(())
     }
 
-    pub fn delete_agent<'info>(
-        ctx: Context<'_, '_, 'info, 'info, RegisterAgents<'info>>,
+    pub fn delete_agent_id_to_service<'info>(
+        ctx: Context<'_, '_, 'info, 'info, RegisterAgentIdsToService<'info>>,
         service_owner: Pubkey,
         agent_id: u32,
         threshold: Option<u32>,
@@ -368,11 +378,11 @@ pub mod registry {
         let agent_ids = vec![agent_id];
         let agent_params = vec![AgentParams { slots: 0, bond: 0 }];
 
-        register_agents(ctx, service_owner, agent_ids, agent_params, threshold)
+        register_agent_ids_to_service(ctx, service_owner, agent_ids, agent_params, threshold)
     }
 
-    pub fn add_agent<'info>(
-        ctx: Context<'_, '_, 'info, 'info, RegisterAgents<'info>>,
+    pub fn add_agent_id_to_service<'info>(
+        ctx: Context<'_, '_, 'info, 'info, RegisterAgentIdsToService<'info>>,
         service_owner: Pubkey,
         agent_id: u32,
         slots: u32,
@@ -382,7 +392,7 @@ pub mod registry {
         let agent_ids = vec![agent_id];
         let agent_params = vec![AgentParams { slots, bond }];
 
-        register_agents(ctx, service_owner, agent_ids, agent_params, threshold)
+        register_agent_ids_to_service(ctx, service_owner, agent_ids, agent_params, threshold)
     }
 
     pub fn change_drainer(ctx: Context<ChangeDrainer>, new_drainer: Pubkey) -> Result<()> {
@@ -513,7 +523,7 @@ pub struct UpdateService<'info> {
 }
 
 #[derive(Accounts)]
-pub struct RegisterAgents<'info> {
+pub struct RegisterAgentIdsToService<'info> {
     #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
 

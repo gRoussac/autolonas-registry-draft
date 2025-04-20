@@ -162,7 +162,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             agent_ids,
             agent_params,
@@ -286,7 +286,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             agent_ids,
             agent_params,
@@ -340,7 +340,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             agent_ids,
             updated_params,
@@ -458,7 +458,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             agent_ids,
             agent_params,
@@ -510,7 +510,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             agent_ids.slice(0, 1),
             updated_params,
@@ -623,7 +623,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             agent_ids,
             agent_params,
@@ -678,7 +678,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             [newServiceId],
             updated_params,
@@ -779,7 +779,7 @@ describe('registry', () => {
         );
 
       await program.methods
-        .registerAgents(
+        .registerAgentIdsToService(
           ownerService.publicKey,
           agent_ids,
           agent_params,
@@ -816,7 +816,11 @@ describe('registry', () => {
       );
 
       await program.methods
-        .deleteAgent(ownerService.publicKey, agentToDelete, newThreshold)
+        .deleteAgentIdToService(
+          ownerService.publicKey,
+          agentToDelete,
+          newThreshold
+        )
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -905,7 +909,7 @@ describe('registry', () => {
       // Register initial agent
       try {
         await program.methods
-          .registerAgents(
+          .registerAgentIdsToService(
             ownerService.publicKey,
             initial_agent_ids,
             initial_agent_params,
@@ -947,7 +951,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .addAgent(
+          .addAgentIdToService(
             ownerService.publicKey,
             newAgentId,
             slots,
@@ -1052,7 +1056,7 @@ describe('registry', () => {
 
       // Register agents
       await program.methods
-        .registerAgents(
+        .registerAgentIdsToService(
           ownerService.publicKey,
           agent_ids,
           agent_params,
