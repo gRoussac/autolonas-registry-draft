@@ -1574,6 +1574,163 @@ describe('registry', () => {
       }
       //  console.info(agentParamsOnChain);
     });
+
+    it('activates a service', async () => {
+      let agent_ids_per_service = 1;
+      const threshold = 1;
+      const bond = 1 * anchor.web3.LAMPORTS_PER_SOL;
+
+      // Define agent_ids and agent_params
+      const agent_ids: number[] = Array.from(
+        { length: agent_ids_per_service },
+        (_, i) => i + 1
+      );
+      const agent_params = agent_ids.map((id) => ({
+        slots: 1,
+        bond: new anchor.BN(bond),
+      }));
+
+      // console.info(agent_ids);
+      // console.info(agent_params);
+
+      const config_hash = new Uint8Array(32).fill(13);
+
+      const [servicePda, _bump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('service'),
+          Buffer.from(config_hash.buffer, config_hash.byteOffset, 7),
+        ],
+        program.programId
+      );
+
+      // Create first service
+      await program.methods
+        .create(Array.from(config_hash), ownerService.publicKey, null)
+        .accounts({
+          registry: registryAccount.publicKey,
+          service: servicePda,
+          user: manager.publicKey,
+        })
+        .signers([manager])
+        .rpc();
+
+      // console.info(servicePda);
+      // console.info(ownerService.publicKey);
+
+      // FETCH THE SERVICE ACCOUNT FROM CHAIN
+      const serviceAccount =
+        await program.account.serviceAccount.fetch(servicePda);
+
+      // Get the actual dynamic service_id from the on-chain account
+      const serviceId = serviceAccount.serviceId;
+
+      // console.info(serviceId);
+
+      // Add agents params
+      const paramPdas = [];
+      // Loop through agentIds to generate all the agent_param_pda addresses
+      for (let i = 0; i < agent_ids.length; i++) {
+        const agentId = new anchor.BN(agent_ids[i]);
+
+        const [agent_param_pda, _bump] =
+          anchor.web3.PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('agent_param'),
+              serviceId.toArrayLike(Buffer, 'le', 16), // service_id as little-endian 16 bytes
+              agentId.toArrayLike(Buffer, 'le', 4), // agent_id as little-endian 4 bytes
+            ],
+            program.programId
+          );
+
+        paramPdas.push(agent_param_pda);
+      }
+
+      const [serviceAgentIdsIndexPDA, _bumpServiceAgentIdsIndex] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('service_agent_ids_index'),
+            serviceId.toArrayLike(Buffer, 'le', 16),
+          ],
+          program.programId
+        );
+
+      //  console.debug(paramPdas);
+
+      try {
+        await program.methods
+          .registerAgentIdsToService(
+            ownerService.publicKey,
+            agent_ids,
+            agent_params,
+            threshold
+          )
+          .accounts({
+            registry: registryAccount.publicKey,
+            service: servicePda, // The service account (PDA) to add agents
+            serviceAgentIdsIndex: serviceAgentIdsIndexPDA, // The vector registry account to index agents
+            user: manager.publicKey, // The manager of the registry (signer)
+          })
+          .remainingAccounts([
+            ...paramPdas.map((pda) => ({
+              // params pdas to create or update
+              pubkey: pda,
+              isSigner: false,
+              isWritable: true,
+            })),
+          ])
+          .signers([manager])
+          .rpc();
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
+
+      const serviceAccountBefore =
+        await program.account.serviceAccount.fetch(servicePda);
+      expect(serviceAccountBefore.state.activeRegistration).to.be.undefined;
+
+      const [serviceDepositPda, _bumpServiceDepositPda] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [Buffer.from('deposit'), serviceId.toArrayLike(Buffer, 'le', 16)],
+          program.programId
+        );
+
+      // Transfer lamports to the deposit account
+      await provider.sendAndConfirm(
+        new anchor.web3.Transaction().add(
+          anchor.web3.SystemProgram.transfer({
+            fromPubkey: manager.publicKey,
+            toPubkey: serviceDepositPda,
+            lamports: bond,
+          })
+        ),
+        [manager]
+      );
+
+      const lamportsBefore =
+        await provider.connection.getBalance(serviceDepositPda);
+      expect(lamportsBefore).to.equal(bond);
+
+      try {
+        await program.methods
+          .activateRegistration(ownerService.publicKey, serviceId)
+          .accounts({
+            registry: registryAccount.publicKey,
+            service: servicePda,
+            user: manager.publicKey,
+            serviceDepositAccount: serviceDepositPda,
+          })
+          .signers([manager])
+          .rpc();
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
+
+      const updatedService =
+        await program.account.serviceAccount.fetch(servicePda);
+
+      expect(updatedService.state.preRegistration).to.be.undefined;
+      expect(updatedService.state.activeRegistration).not.to.be.undefined;
+    });
   });
 
   describe('Registry Drainer Tests', () => {
