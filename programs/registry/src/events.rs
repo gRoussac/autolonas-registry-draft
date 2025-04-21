@@ -24,3 +24,8 @@ pub struct UpdateServiceEvent {
 pub struct DrainerUpdatedEvent {
     pub new_drainer: Pubkey,
 }
+
+#[event]
+pub struct ActivateRegistrationEvent {
+    pub service_id: u64,
+}

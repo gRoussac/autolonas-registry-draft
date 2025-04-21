@@ -105,7 +105,8 @@ pub mod registry {
     use crate::{
         error::ErrorCode,
         events::{
-            CreateServiceEvent, DrainerUpdatedEvent, RegisterAgentIdsEvent, UpdateServiceEvent,
+            ActivateRegistrationEvent, CreateServiceEvent, DrainerUpdatedEvent,
+            RegisterAgentIdsEvent, UpdateServiceEvent,
         },
     };
 
@@ -463,6 +464,41 @@ pub mod registry {
         Ok(())
     }
 
+    pub fn activate_registration(
+        ctx: Context<ActivateRegistration>,
+        service_owner: Pubkey,
+        service_id: u64,
+    ) -> Result<()> {
+        let registry = &ctx.accounts.registry;
+        let service = &mut ctx.accounts.service;
+
+        // Check for the manager privilege for a service management
+        if ctx.accounts.user.key() != registry.manager {
+            return Err(Error::from(ProgramError::InvalidAccountOwner));
+        }
+
+        // Check for the non-empty service owner address
+        if service_owner == Pubkey::default() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        require!(
+            service.state == ServiceState::PreRegistration,
+            ErrorCode::ServiceMustBeInactive
+        );
+
+        require!(
+            (ctx.accounts.service_deposit_account.lamports() as u128) == service.security_deposit,
+            ErrorCode::IncorrectRegistrationDepositValue
+        );
+
+        service.state = ServiceState::ActiveRegistration;
+
+        emit!(ActivateRegistrationEvent { service_id });
+
+        Ok(())
+    }
+
     pub fn dummy_include_agent_param_account(
         _ctx: Context<DummyContextForAgentParam>,
     ) -> Result<()> {
@@ -617,6 +653,21 @@ pub struct CheckService<'info> {
         bump,
     )]
     pub service_agent_ids_index: Account<'info, ServiceAgentIdsIndex>,
+}
+
+#[derive(Accounts)]
+pub struct ActivateRegistration<'info> {
+    pub registry: Account<'info, ServiceRegistry>,
+
+    #[account(mut)]
+    pub service: Account<'info, ServiceAccount>,
+
+    /// CHECK: lamports only, we don’t read/write data
+    #[account(mut)]
+    pub service_deposit_account: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub user: Signer<'info>,
 }
 
 #[derive(Accounts)]

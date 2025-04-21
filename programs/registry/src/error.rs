@@ -41,4 +41,10 @@ pub enum ErrorCode {
 
     #[msg("Invalid account owner")]
     InvalidAccountOwner,
+
+    #[msg("Service must be active")]
+    ServiceMustBeInactive,
+
+    #[msg("Incorrect registration deposit value")]
+    IncorrectRegistrationDepositValue,
 }
