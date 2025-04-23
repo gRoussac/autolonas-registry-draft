@@ -47,4 +47,34 @@ pub enum ErrorCode {
 
     #[msg("Incorrect registration deposit value")]
     IncorrectRegistrationDepositValue,
+
+    #[msg("Agent is not registred in service")]
+    AgentNotInService,
+
+    #[msg("IncorrectA agent bonding value")]
+    IncorrectAgentBondingValue,
+
+    #[msg("IncorrectA agent instances")]
+    IncorrectAgentInstances,
+
+    #[msg("Wrong operator")]
+    WrongOperator,
+
+    #[msg("Max agent id per service reached")]
+    MaxAgentIdPerServiceReached,
+
+    #[msg("Account of service and agent_id instance already exists")]
+    AccountServiceAgentIdInstanceExists,
+
+    #[msg("Account of agent_id instance and operator already exists")]
+    AccountAgentIdInstanceOperatorExists,
+
+    #[msg("Agent instances slots filled")]
+    AgentInstancesSlotsFilled,
+
+    #[msg("Wrong registry wallet")]
+    WrongRegistryWallet,
+
+    #[msg("Overflow")]
+    Overflow,
 }

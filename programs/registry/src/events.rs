@@ -11,7 +11,7 @@ pub struct RegisterAgentIdsEvent {
     pub service_id: u128,
     pub agent_ids: Vec<u32>,
     pub max_num_agent_instances: u32,
-    pub security_deposit: u128,
+    pub security_deposit: u64,
 }
 
 #[event]
@@ -27,5 +27,19 @@ pub struct DrainerUpdatedEvent {
 
 #[event]
 pub struct ActivateRegistrationEvent {
-    pub service_id: u64,
+    pub service_id: u128,
+}
+
+#[event]
+pub struct RegisterInstance {
+    pub operator: Pubkey,
+    pub service_id: u128,
+    pub agent_instance: Pubkey,
+    pub agent_id: u32,
+}
+
+#[event]
+pub struct Deposit {
+    pub operator: Pubkey,
+    pub amount: u64,
 }
