@@ -1,10 +1,11 @@
 #![allow(unexpected_cfgs)]
-use anchor_lang::solana_program::system_instruction::transfer;
-use anchor_lang::AccountDeserialize;
 use anchor_lang::{
     prelude::*,
-    solana_program::{program::invoke_signed, system_instruction},
-    Discriminator,
+    solana_program::{
+        program::invoke_signed,
+        system_instruction::{self, transfer},
+    },
+    AccountDeserialize, Discriminator,
 };
 
 pub mod error;
@@ -13,6 +14,7 @@ use error::ErrorCode;
 use events::{Deposit, RegisterInstance};
 
 const MAX_AGENT_IDS_PER_SERVICE: usize = 128;
+const MAX_AGENT_INSTANCES_PER_SERVICE: usize = 192;
 
 declare_id!("9Q2mQxDLH91HLaQUYyxV5n9WhA1jzgVThJwfJTNqEUNP");
 
@@ -122,12 +124,17 @@ impl AgentInstancesAccount {
 
 #[account]
 pub struct AgentInstanceOperatorAccount {
-    pub operator: Pubkey,
     pub service_agent_instance_pda: Pubkey,
+    pub operator: Pubkey,
 }
 
 impl AgentInstanceOperatorAccount {
     pub const LEN: usize = 8 + 32 + ServiceAgentInstanceAccount::LEN;
+}
+
+#[account]
+pub struct AgentInstanceOperatorIndex {
+    pub agent_instance_operator_pda: Vec<Pubkey>,
 }
 
 #[account]
@@ -323,7 +330,7 @@ pub mod registry {
 
         let program_id = ctx.program_id;
         let user_account_info = ctx.accounts.user.to_account_info();
-        let system_program_account_info = ctx.accounts.system_program.to_account_info().clone();
+        let system_program_account_info = ctx.accounts.system_program.to_account_info();
         let service_agent_ids_index = &mut ctx.accounts.service_agent_ids_index;
         let mut remaining_accounts = ctx.remaining_accounts.iter();
 
@@ -412,7 +419,7 @@ pub mod registry {
 
             ServiceRegistry::upsert_agent_param_index(
                 &mut service_agent_ids_index.agent_ids,
-                (*agent_param_data).clone(),
+                &agent_param_data,
             );
 
             let mut data = agent_param_account_info.try_borrow_mut_data()?;
@@ -666,14 +673,15 @@ pub mod registry {
 
         let program_id = ctx.program_id;
         let user_account_info = ctx.accounts.user.to_account_info();
-        let system_program_account_info = ctx.accounts.system_program.to_account_info().clone();
+        let system_program_account_info = ctx.accounts.system_program.to_account_info();
+        let agent_instance_operator_index_account = &mut ctx.accounts.agent_instance_operator_index;
 
         for (i, agent_id) in agent_ids.iter().enumerate() {
             let agent_instance = agent_instances[i];
             let agent_param = &agent_params[i];
 
             ServiceRegistry::register_single_instance(
-                ctx.program_id,
+                program_id,
                 service,
                 *agent_id,
                 agent_instance,
@@ -681,6 +689,7 @@ pub mod registry {
                 operator,
                 &user_account_info,
                 &system_program_account_info,
+                agent_instance_operator_index_account,
                 &mut remaining_accounts,
             )?;
         }
@@ -851,11 +860,12 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    fn upsert_agent_param_index(vec: &mut Vec<AgentParamAccount>, param: AgentParamAccount) {
+    fn upsert_agent_param_index(vec: &mut Vec<AgentParamAccount>, param: &AgentParamAccount) {
+        let param_clone = (*param).clone();
         if let Some(existing) = vec.iter_mut().find(|x| x.agent_id == param.agent_id) {
-            *existing = param;
+            *existing = param_clone;
         } else {
-            vec.push(param);
+            vec.push(param_clone);
         }
     }
 
@@ -1036,6 +1046,7 @@ impl ServiceRegistry {
         operator: Pubkey,
         user_account_info: &AccountInfo<'info>,
         system_program_account_info: &AccountInfo<'info>,
+        agent_instance_operator_index_account: &mut Account<'info, AgentInstanceOperatorIndex>,
         remaining_accounts: &mut std::slice::Iter<'info, AccountInfo<'info>>,
     ) -> Result<()> {
         let service_id = service.service_id;
@@ -1265,6 +1276,25 @@ impl ServiceRegistry {
             ErrorCode::IncorrectAgentInstances
         );
 
+        //  Push in agent_instance_operator_index
+        let (agent_instance_operator_pda, _aagent_instance_operator_bump) =
+            Pubkey::find_program_address(
+                &[
+                    b"agent_instance_operator_index",
+                    &service.service_id.to_le_bytes(),
+                ],
+                program_id,
+            );
+
+        require!(
+            agent_instance_operator_pda == agent_instance_operator_index_account.key(),
+            ErrorCode::InvalidPda
+        );
+
+        agent_instance_operator_index_account
+            .agent_instance_operator_pda
+            .push(agent_instance_operator_pda);
+
         emit!(RegisterInstance {
             operator,
             service_id,
@@ -1467,6 +1497,15 @@ pub struct RegisterAgentInstances<'info> {
     /// CHECK: PDA wallet owned by the program
     #[account(mut)]
     pub registry_wallet: AccountInfo<'info>,
+
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = 8 + (MAX_AGENT_INSTANCES_PER_SERVICE * PUBKEY_SIZE) + 16, // 8 bytes for Vec metadata + data for MAX_AGENT_INSTANCES_PER_SERVICE PUBKEY_SIZE agent_instance_operator_pda PDA + 16 bytes Vec overhead
+        seeds = [b"agent_instance_operator_index", &service.service_id.to_le_bytes()[..]],
+        bump,
+    )]
+    pub agent_instance_operator_index: Account<'info, AgentInstanceOperatorIndex>,
 
     #[account(mut)]
     pub user: Signer<'info>,

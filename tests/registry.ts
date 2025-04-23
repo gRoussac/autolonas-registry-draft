@@ -1970,6 +1970,13 @@ describe('registry', () => {
 
       // console.debug(remainingAccounts);
 
+      const serviceIdSeed = serviceId.toArrayLike(Buffer, 'le', 16);
+      const [agentInstanceOperatorIndexPda] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [Buffer.from('agent_instance_operator_index'), serviceIdSeed],
+          program.programId
+        );
+
       try {
         await program.methods
           .registerAgents(
@@ -1982,6 +1989,7 @@ describe('registry', () => {
             service: servicePda,
             user: manager.publicKey,
             registryWallet: programWalletPda,
+            agentInstanceOperatorIndex: agentInstanceOperatorIndexPda,
           })
           .remainingAccounts(remainingAccounts)
           .signers([manager])
@@ -2246,6 +2254,13 @@ describe('registry', () => {
 
       //   console.debug(pdaList);
 
+      const serviceIdSeed = serviceId.toArrayLike(Buffer, 'le', 16);
+      const [agentInstanceOperatorIndexPda] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [Buffer.from('agent_instance_operator_index'), serviceIdSeed],
+          program.programId
+        );
+
       try {
         await program.methods
           .registerAgents(
@@ -2258,6 +2273,7 @@ describe('registry', () => {
             service: servicePda,
             user: manager.publicKey,
             registryWallet: programWalletPda,
+            agentInstanceOperatorIndex: agentInstanceOperatorIndexPda,
           })
           .remainingAccounts(
             pdaList.map((pda, idx) => ({

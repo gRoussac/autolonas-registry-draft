@@ -77,4 +77,7 @@ pub enum ErrorCode {
 
     #[msg("Overflow")]
     Overflow,
+
+    #[msg("Operator has no instances")]
+    OperatorHasNoInstances,
 }
