@@ -1931,8 +1931,8 @@ describe('registry', () => {
         anchor.web3.PublicKey.findProgramAddressSync(
           [
             Buffer.from('operator_bond'),
-            operator.publicKey.toBuffer(),
             serviceId.toArrayLike(Buffer, 'le', 16),
+            operator.publicKey.toBuffer(),
           ],
           program.programId
         );
@@ -2244,15 +2244,15 @@ describe('registry', () => {
       const [operatorBondPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
           Buffer.from('operator_bond'),
-          operator.publicKey.toBuffer(),
           serviceId.toArrayLike(Buffer, 'le', 16),
+          operator.publicKey.toBuffer(),
         ],
         program.programId
       );
 
       pdaList.push(operatorBondPda);
 
-      //   console.debug(pdaList);
+      // console.debug(pdaList);
 
       const serviceIdSeed = serviceId.toArrayLike(Buffer, 'le', 16);
       const [agentInstanceOperatorIndexPda] =

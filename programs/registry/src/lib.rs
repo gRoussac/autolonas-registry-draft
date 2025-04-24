@@ -168,7 +168,7 @@ pub mod registry {
     use crate::{
         error::ErrorCode,
         events::{
-            ActivateRegistrationEvent, CreateServiceEvent, DrainerUpdatedEvent,
+            ActivateRegistrationEvent, CreateServiceEvent, DrainerUpdatedEvent, OperatorUnbonded,
             RegisterAgentIdsEvent, UpdateServiceEvent,
         },
     };
@@ -750,88 +750,92 @@ pub mod registry {
         Ok(())
     }
 
-    // pub fn unbond<'info>(
-    //     ctx: Context<'_, '_, 'info, 'info, UnbondOperator<'info>>,
-    //     operator: Pubkey,
-    //     service_id: u128,
-    // ) -> Result<()> {
-    //     let registry = &ctx.accounts.registry;
-    //     let service = &mut ctx.accounts.service;
+    pub fn unbond<'info>(
+        ctx: Context<'_, '_, 'info, 'info, UnbondOperator<'info>>,
+        service_id: u128,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+        let service = &mut ctx.accounts.service;
+        let operator = &mut ctx.accounts.operator;
+        let operator_bond = &mut ctx.accounts.operator_bond;
 
-    //     if registry.locked {
-    //         return Err(ErrorCode::ReentrancyGuard.into());
-    //     }
+        if registry.locked {
+            return Err(ErrorCode::ReentrancyGuard.into());
+        }
 
-    //     registry.locked = true;
+        registry.locked = true;
 
-    //     // Check for the manager privilege for a service management
-    //     if ctx.accounts.user.key() != registry.manager {
-    //         return Err(Error::from(ProgramError::InvalidAccountOwner));
-    //     }
+        // Check for the manager privilege for a service management
+        if ctx.accounts.user.key() != registry.manager {
+            return Err(Error::from(ProgramError::InvalidAccountOwner));
+        }
 
-    //     // Check for the non-empty service owner address
-    //     if operator == Pubkey::default() {
-    //         return Err(ProgramError::InvalidArgument.into());
-    //     }
+        // Check for the non-empty service owner address
+        if operator.key() == Pubkey::default() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
 
-    //     // Validate service state
-    //     require!(
-    //         service.state == ServiceState::TerminatedBonded,
-    //         ErrorCode::WrongServiceState
-    //     );
+        // Validate service state
+        require!(
+            service.state == ServiceState::TerminatedBonded,
+            ErrorCode::WrongServiceState
+        );
 
-    //     // Load agent instances
-    //     let agent_instances_account = &mut ctx.accounts.agent_instances.load_mut()?;
+        // Load agent instances
+        let agent_instances_account = &mut ctx.accounts.agent_instance_operator_index;
 
-    //     let num_instances = agent_instances_account.instances.len();
-    //     require!(num_instances > 0, ErrorCode::OperatorHasNoInstances);
+        let num_instances = agent_instances_account.agent_instance_operator_pda.len();
+        require!(num_instances > 0, ErrorCode::OperatorHasNoInstances);
 
-    //     // Update service state
-    //     service.num_agent_instances = service
-    //         .num_agent_instances
-    //         .saturating_sub(num_instances as u32);
-    //     if service.num_agent_instances == 0 {
-    //         service.state = ServiceState::PreRegistration;
-    //     }
+        // Update service state
+        service.num_agent_instances = service
+            .num_agent_instances
+            .saturating_sub(num_instances as u32);
+        if service.num_agent_instances == 0 {
+            service.state = ServiceState::PreRegistration;
+        }
 
-    //     // Refund logic
-    //     let mut refund: u64 = 0;
-    //     for instance in agent_instances_account.instances.iter() {
-    //         let key = ServiceRegistry::get_service_agent_key(service_id, instance.agent_id);
-    //         if let Some(param) = ctx.accounts.agent_params.get(&key) {
-    //             refund = refund.saturating_add(param.bond);
-    //         }
-    //         // Delete operator from mapping (clean-up)
-    //         // Not shown: you could call something like `ServiceRegistry::remove_agent_instance(...)`
-    //     }
+        // Refund logic
+        let (operator_bond_pda, _operator_bond_bump) = Pubkey::find_program_address(
+            &[
+                b"operator_bond",
+                &service_id.to_le_bytes(),
+                &operator.key().to_bytes(),
+            ],
+            ctx.program_id,
+        );
 
-    //     // Cap refund to recorded balance
-    //     let balance = ctx.accounts.operator_bond_account.lamports();
-    //     let refund_final = refund.min(balance);
+        require!(
+            operator_bond_pda == operator_bond.key(),
+            ErrorCode::InvalidPda
+        );
 
-    //     // Transfer refund
-    //     if refund_final > 0 {
-    //         **ctx
-    //             .accounts
-    //             .operator_bond_account
-    //             .try_borrow_mut_lamports()? -= refund_final;
-    //         **ctx.accounts.operator.try_borrow_mut_lamports()? += refund_final;
-    //     }
+        let refund: u64 = operator_bond.bond;
 
-    //     // Delete agent instance record
-    //     // PDA account deletion logic can be added if needed
-    //     agent_instances_account.instances.clear();
+        // Only proceed if there's something to refund
+        if refund > 0 {
+            operator_bond.bond = 0; // wipe the data
 
-    //     // Emit event
-    //     emit!(OperatorUnbonded {
-    //         operator,
-    //         service_id,
-    //         refund: refund_final,
-    //     });
+            // Transfer lamports back to the operator
+            **operator.to_account_info().try_borrow_mut_lamports()? += refund;
+            **operator_bond.to_account_info().try_borrow_mut_lamports()? -= refund;
 
-    //     registry.locked = false;
-    //     Ok(())
-    // }
+            msg!("Refunded {} lamports to operator", refund);
+        }
+
+        // Delete agent instance record
+        // agent_instances_account.instances.clear;
+
+        // Emit event
+        emit!(OperatorUnbonded {
+            operator: operator.key(),
+            service_id,
+            refund,
+        });
+
+        registry.locked = false;
+        Ok(())
+    }
 }
 
 impl ServiceRegistry {
@@ -1317,8 +1321,8 @@ impl ServiceRegistry {
         let (operator_bond_pda, operator_bond_bump) = Pubkey::find_program_address(
             &[
                 b"operator_bond",
-                &operator.to_bytes(),
                 &service_id.to_le_bytes(),
+                &operator.to_bytes(),
             ],
             program_id,
         );
@@ -1344,8 +1348,8 @@ impl ServiceRegistry {
                 ],
                 &[&[
                     b"operator_bond",
-                    &operator.to_bytes(),
                     &service_id.to_le_bytes(),
+                    &operator.to_bytes(),
                     &[operator_bond_bump],
                 ]],
             )?;
@@ -1506,6 +1510,31 @@ pub struct RegisterAgentInstances<'info> {
         bump,
     )]
     pub agent_instance_operator_index: Account<'info, AgentInstanceOperatorIndex>,
+
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UnbondOperator<'info> {
+    pub registry: Account<'info, ServiceRegistry>,
+
+    #[account(mut)]
+    pub service: Account<'info, ServiceAccount>,
+
+    #[account(
+        seeds = [b"agent_instance_operator_index", &service.service_id.to_le_bytes()[..]],
+        bump,
+    )]
+    pub agent_instance_operator_index: Account<'info, AgentInstanceOperatorIndex>,
+
+    #[account(mut, close = operator)]
+    pub operator_bond: Account<'info, OperatorBondAccount>,
+
+    #[account(mut)]
+    pub operator: Signer<'info>,
 
     #[account(mut)]
     pub user: Signer<'info>,
