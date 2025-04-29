@@ -859,7 +859,7 @@ pub mod registry {
 
         // Refund security deposit
         let refund = service.security_deposit;
-        msg!(&refund.to_string());
+
         if refund > 0 {
             service.security_deposit = 0;
 
@@ -963,7 +963,7 @@ pub mod registry {
             **operator.to_account_info().try_borrow_mut_lamports()? += refund;
             **operator_bond.to_account_info().try_borrow_mut_lamports()? -= refund;
 
-            msg!("Refunded {} lamports to operator", refund);
+            // msg!("Refunded {} lamports to operator", refund);
         }
 
         ServiceRegistry::close_account(&operator_bond.to_account_info(), &ctx.accounts.user)?;
