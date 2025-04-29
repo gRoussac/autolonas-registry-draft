@@ -63,6 +63,9 @@ pub enum ErrorCode {
     #[msg("Max agent id per service reached")]
     MaxAgentIdPerServiceReached,
 
+    #[msg("Max agent instances per service reached")]
+    MaxAgentInstancesPerServiceReached,
+
     #[msg("Account of service and agent_id instance already exists")]
     AccountServiceAgentIdInstanceExists,
 
@@ -80,4 +83,7 @@ pub enum ErrorCode {
 
     #[msg("Operator has no instances")]
     OperatorHasNoInstances,
+
+    #[msg("Insufficient funds")]
+    InsufficientFunds,
 }

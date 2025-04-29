@@ -45,6 +45,17 @@ pub struct Deposit {
 }
 
 #[event]
+pub struct Refunded {
+    pub service_owner: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct ServiceTerminated {
+    pub service_id: u128,
+}
+
+#[event]
 pub struct OperatorUnbonded {
     pub operator: Pubkey,
     pub service_id: u128,

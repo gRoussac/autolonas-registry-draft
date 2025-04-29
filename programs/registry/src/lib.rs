@@ -4,6 +4,7 @@ use anchor_lang::{
     solana_program::{
         program::invoke_signed,
         system_instruction::{self, transfer},
+        system_program,
     },
     AccountDeserialize, Discriminator,
 };
@@ -89,7 +90,7 @@ pub struct AgentParamAccount {
 }
 
 impl AgentParamAccount {
-    pub const LEN: usize = 8 + 4 + 4 + 8;
+    pub const LEN: usize = 8 + 4 + 4 + U64_SIZE;
 }
 
 #[account]
@@ -105,7 +106,7 @@ pub struct ServiceAgentInstanceAccount {
 }
 
 impl ServiceAgentInstanceAccount {
-    pub const LEN: usize = 8 + 16 + 4 + 32;
+    pub const LEN: usize = 8 + U128_SIZE + 4 + PUBKEY_SIZE;
 }
 
 #[account]
@@ -115,11 +116,13 @@ pub struct ServiceAgentSlotCounterAccount {
 
 #[account]
 pub struct AgentInstancesAccount {
-    pub agent_instance: Pubkey,
+    pub service_id: u128,
+    pub agent_id: u32,
+    pub agent_instances: Vec<Pubkey>,
 }
 
 impl AgentInstancesAccount {
-    pub const LEN: usize = 8 + 32;
+    pub const LEN: usize = 8 + U128_SIZE + 4 + 8 + (MAX_AGENT_INSTANCES_PER_SERVICE * PUBKEY_SIZE);
 }
 
 #[account]
@@ -129,7 +132,7 @@ pub struct AgentInstanceOperatorAccount {
 }
 
 impl AgentInstanceOperatorAccount {
-    pub const LEN: usize = 8 + 32 + ServiceAgentInstanceAccount::LEN;
+    pub const LEN: usize = 8 + PUBKEY_SIZE + PUBKEY_SIZE;
 }
 
 #[account]
@@ -145,7 +148,7 @@ pub struct OperatorBondAccount {
 }
 
 impl OperatorBondAccount {
-    pub const LEN: usize = 8 + 16 + 32 + 16;
+    pub const LEN: usize = 8 + U128_SIZE + PUBKEY_SIZE + U64_SIZE;
 }
 
 #[repr(u8)]
@@ -169,7 +172,7 @@ pub mod registry {
         error::ErrorCode,
         events::{
             ActivateRegistrationEvent, CreateServiceEvent, DrainerUpdatedEvent, OperatorUnbonded,
-            RegisterAgentIdsEvent, UpdateServiceEvent,
+            Refunded, RegisterAgentIdsEvent, ServiceTerminated, UpdateServiceEvent,
         },
     };
 
@@ -222,7 +225,7 @@ pub mod registry {
 
         // Check for the manager privilege for a service management
         if ctx.accounts.user.key() != registry.manager {
-            return Err(Error::from(ProgramError::InvalidAccountOwner));
+            return Err(ProgramError::InvalidAccountOwner.into());
         }
 
         // Check for the non-empty service owner address
@@ -273,12 +276,12 @@ pub mod registry {
 
         // Only the manager can update the service
         if ctx.accounts.user.key() != registry.manager {
-            return Err(Error::from(ProgramError::InvalidAccountOwner));
+            return Err(ProgramError::InvalidAccountOwner.into());
         }
 
         // Validate that the provided service owner is the actual owner of the service
         if service.service_owner != service_owner {
-            return Err(Error::from(ProgramError::InvalidArgument));
+            return Err(ProgramError::InvalidArgument.into());
         }
 
         // Check if the service state is PreRegistration, only then can the service be updated
@@ -321,11 +324,11 @@ pub mod registry {
 
         // Check for the manager privilege for a service management
         if ctx.accounts.user.key() != registry.manager {
-            return Err(Error::from(ProgramError::UninitializedAccount));
+            return Err(ProgramError::UninitializedAccount.into());
         }
 
         if service_owner != service.service_owner {
-            return Err(Error::from(ProgramError::InvalidAccountOwner));
+            return Err(ProgramError::InvalidAccountOwner.into());
         }
 
         let program_id = ctx.program_id;
@@ -490,7 +493,7 @@ pub mod registry {
 
         // Only owner can call
         if ctx.accounts.user.key() != registry.owner {
-            return Err(Error::from(ProgramError::IllegalOwner));
+            return Err(ProgramError::IllegalOwner.into());
         }
 
         // Cannot set zero address
@@ -548,7 +551,7 @@ pub mod registry {
 
         // Check for the manager privilege for a service management
         if ctx.accounts.user.key() != registry.manager {
-            return Err(Error::from(ProgramError::InvalidAccountOwner));
+            return Err(ProgramError::InvalidAccountOwner.into());
         }
 
         // Check for the non-empty service owner address
@@ -750,6 +753,142 @@ pub mod registry {
         Ok(())
     }
 
+    pub fn terminate<'info>(
+        ctx: Context<'_, '_, 'info, 'info, TerminateService<'info>>,
+        service_id: u128,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+        let service = &mut ctx.accounts.service;
+        let service_owner = &ctx.accounts.service_owner;
+        let service_agent_ids_index = &mut ctx.accounts.service_agent_ids_index;
+
+        // Reentrancy guard
+        if registry.locked {
+            return Err(ErrorCode::ReentrancyGuard.into());
+        }
+        registry.locked = true;
+
+        // Check for the manager privilege for service management
+        if ctx.accounts.user.key() != registry.manager {
+            return Err(ProgramError::InvalidAccountOwner.into());
+        }
+
+        // Validate that the provided service owner is the actual owner of the service
+        if service.service_owner != service_owner.key() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        require!(service_id == service.service_id, ErrorCode::InvalidPda);
+
+        // Check if already terminated
+        require!(
+            service.state != ServiceState::PreRegistration
+                && service.state != ServiceState::TerminatedBonded,
+            ErrorCode::WrongServiceState
+        );
+
+        // Update service state
+        if service.num_agent_instances > 0 {
+            service.state = ServiceState::TerminatedBonded;
+        } else {
+            service.state = ServiceState::PreRegistration;
+        }
+
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
+
+        // Cleanup all agent instance PDAs
+        for param in &service_agent_ids_index.agent_ids {
+            // 1. Close the slot_counter PDA
+            let (slot_counter_pda, _) = Pubkey::find_program_address(
+                &[
+                    b"service_agent_slot",
+                    &service_id.to_le_bytes(),
+                    &param.agent_id.to_le_bytes(),
+                ],
+                ctx.program_id,
+            );
+
+            let slot_counter_info = next_account_info(&mut remaining_accounts_iter)?;
+            require!(
+                slot_counter_info.key() == slot_counter_pda,
+                ErrorCode::InvalidPda
+            );
+            ServiceRegistry::close_account(slot_counter_info, &ctx.accounts.user)?;
+
+            // 2. Close the agent_instances PDA
+            let (agent_instances_pda, _) = Pubkey::find_program_address(
+                &[
+                    b"agent_instances",
+                    &service_id.to_le_bytes(),
+                    &param.agent_id.to_le_bytes(),
+                ],
+                ctx.program_id,
+            );
+
+            let agent_instances_info = next_account_info(&mut remaining_accounts_iter)?;
+            require!(
+                agent_instances_info.key() == agent_instances_pda,
+                ErrorCode::InvalidPda
+            );
+
+            // 3. Now close all service_agent_instance PDAs for each agent_instance
+            let agent_instances_account: Account<AgentInstancesAccount> =
+                Account::try_from(agent_instances_info)?;
+
+            for agent_instance in agent_instances_account.agent_instances.iter() {
+                let (service_agent_instance_pda, _) = Pubkey::find_program_address(
+                    &[
+                        b"service_agent_instance",
+                        &service_id.to_le_bytes(),
+                        &param.agent_id.to_le_bytes(),
+                        &agent_instance.to_bytes(),
+                    ],
+                    ctx.program_id,
+                );
+
+                let service_agent_instance_info = next_account_info(&mut remaining_accounts_iter)?;
+                require!(
+                    service_agent_instance_info.key() == service_agent_instance_pda,
+                    ErrorCode::InvalidPda
+                );
+                ServiceRegistry::close_account(service_agent_instance_info, &ctx.accounts.user)?;
+            }
+
+            ServiceRegistry::close_account(agent_instances_info, &ctx.accounts.user)?;
+        }
+
+        // Refund security deposit
+        let refund = service.security_deposit;
+        msg!(&refund.to_string());
+        if refund > 0 {
+            service.security_deposit = 0;
+
+            let wallet_balance = ctx.accounts.registry_wallet.lamports();
+            require!(wallet_balance >= refund, ErrorCode::InsufficientFunds);
+
+            **ctx.accounts.registry_wallet.try_borrow_mut_lamports()? -= refund;
+            **ctx.accounts.service_owner.try_borrow_mut_lamports()? += refund;
+
+            emit!(Refunded {
+                service_owner: ctx.accounts.service_owner.key(),
+                amount: refund,
+            });
+        }
+
+        service_agent_ids_index.agent_ids.clear();
+        if service_agent_ids_index.agent_ids.is_empty() {
+            ServiceRegistry::close_account(
+                &service_agent_ids_index.to_account_info(),
+                &ctx.accounts.user,
+            )?;
+        }
+
+        emit!(ServiceTerminated { service_id });
+        registry.locked = false;
+
+        Ok(())
+    }
+
     pub fn unbond<'info>(
         ctx: Context<'_, '_, 'info, 'info, UnbondOperator<'info>>,
         service_id: u128,
@@ -765,9 +904,11 @@ pub mod registry {
 
         registry.locked = true;
 
+        require!(service_id == service.service_id, ErrorCode::InvalidPda);
+
         // Check for the manager privilege for a service management
         if ctx.accounts.user.key() != registry.manager {
-            return Err(Error::from(ProgramError::InvalidAccountOwner));
+            return Err(ProgramError::InvalidAccountOwner.into());
         }
 
         // Check for the non-empty service owner address
@@ -781,10 +922,12 @@ pub mod registry {
             ErrorCode::WrongServiceState
         );
 
-        // Load agent instances
-        let agent_instances_account = &mut ctx.accounts.agent_instance_operator_index;
+        // Load agent instances for the operator
+        let agent_instance_operator_index = &mut ctx.accounts.agent_instance_operator_index;
 
-        let num_instances = agent_instances_account.agent_instance_operator_pda.len();
+        let num_instances = agent_instance_operator_index
+            .agent_instance_operator_pda
+            .len();
         require!(num_instances > 0, ErrorCode::OperatorHasNoInstances);
 
         // Update service state
@@ -823,8 +966,39 @@ pub mod registry {
             msg!("Refunded {} lamports to operator", refund);
         }
 
-        // Delete agent instance record
-        // agent_instances_account.instances.clear;
+        ServiceRegistry::close_account(&operator_bond.to_account_info(), &ctx.accounts.user)?;
+
+        // Cleanup all agent instance PDAs for operators
+        for agent_instance_operator_pda in agent_instance_operator_index
+            .agent_instance_operator_pda
+            .iter()
+        {
+            // Derive the service_agent_instance PDA from the account
+            let agent_instance_operator_info =
+                next_account_info(&mut ctx.remaining_accounts.iter())?;
+
+            // Validate PDA
+            require!(
+                agent_instance_operator_pda == &agent_instance_operator_info.key(),
+                ErrorCode::InvalidPda
+            );
+
+            //  Close agent_instance_operator
+            ServiceRegistry::close_account(agent_instance_operator_info, &ctx.accounts.user)?;
+        }
+
+        agent_instance_operator_index
+            .agent_instance_operator_pda
+            .clear();
+        if agent_instance_operator_index
+            .agent_instance_operator_pda
+            .is_empty()
+        {
+            ServiceRegistry::close_account(
+                &agent_instance_operator_index.to_account_info(),
+                &ctx.accounts.user,
+            )?;
+        }
 
         // Emit event
         emit!(OperatorUnbonded {
@@ -908,7 +1082,7 @@ impl ServiceRegistry {
         agent_ids: &[u32],
     ) -> Result<()> {
         if ctx.accounts.user.key() != registry.manager {
-            return Err(Error::from(ProgramError::InvalidAccountOwner));
+            return Err(ProgramError::InvalidAccountOwner.into());
         }
 
         require!(
@@ -1055,9 +1229,13 @@ impl ServiceRegistry {
     ) -> Result<()> {
         let service_id = service.service_id;
 
-        //  1. Global agent_instances
+        // 1. Global agent_instances
         let (agent_instances_pda, agent_instances_bump) = Pubkey::find_program_address(
-            &[b"agent_instances", &agent_instance.to_bytes()],
+            &[
+                b"agent_instances",
+                &service_id.to_le_bytes(),
+                &agent_id.to_le_bytes(),
+            ],
             program_id,
         );
 
@@ -1068,38 +1246,52 @@ impl ServiceRegistry {
             ErrorCode::InvalidPda
         );
 
-        if !agent_instances_account_info.data_is_empty() {
-            return Err(Error::from(ErrorCode::AccountServiceAgentIdInstanceExists));
+        // Check if the account exists
+        let mut agent_instances_data: Account<AgentInstancesAccount>;
+
+        if agent_instances_account_info.data_is_empty() {
+            // Create the account if it doesn't exist
+            invoke_signed(
+                &system_instruction::create_account(
+                    &user_account_info.key(),
+                    &agent_instances_pda,
+                    Rent::get()?.minimum_balance(AgentInstancesAccount::LEN),
+                    AgentInstancesAccount::LEN as u64,
+                    program_id,
+                ),
+                &[
+                    user_account_info.clone(),
+                    agent_instances_account_info.clone(),
+                    system_program_account_info.clone(),
+                ],
+                &[&[
+                    b"agent_instances",
+                    &service_id.to_le_bytes(),
+                    &agent_id.to_le_bytes(),
+                    &[agent_instances_bump],
+                ]],
+            )?;
+
+            // Initialize new empty account
+            agent_instances_data = Account::try_from_unchecked(agent_instances_account_info)?;
+            agent_instances_data.service_id = service_id;
+            agent_instances_data.agent_id = agent_id;
+            agent_instances_data.agent_instances = Vec::new();
+        } else {
+            // Load existing account
+            agent_instances_data = Account::try_from_unchecked(agent_instances_account_info)?;
         }
 
-        invoke_signed(
-            &system_instruction::create_account(
-                &user_account_info.key(),
-                &agent_instances_pda,
-                Rent::get()?.minimum_balance(AgentInstancesAccount::LEN),
-                AgentInstancesAccount::LEN as u64,
-                program_id,
-            ),
-            &[
-                user_account_info.clone(),
-                agent_instances_account_info.clone(),
-                system_program_account_info.clone(),
-            ],
-            &[&[
-                b"agent_instances",
-                &agent_instance.to_bytes(),
-                &[agent_instances_bump],
-            ]],
-        )?;
+        // Add the new agent instance
+        agent_instances_data.agent_instances.push(agent_instance);
 
-        let mut agent_instances_data: Account<AgentInstancesAccount> =
-            Account::try_from_unchecked(agent_instances_account_info)?;
-        agent_instances_data.agent_instance = agent_instance;
         let mut data = agent_instances_account_info.try_borrow_mut_data()?;
         let discriminator =
             &anchor_lang::solana_program::hash::hash("account:AgentInstancesAccount".as_bytes())
                 .to_bytes()[..8];
         data[..8].copy_from_slice(discriminator);
+
+        // Serialize the struct after discriminator
         agent_instances_data.serialize(&mut &mut data[8..])?;
 
         //  2. Slot counter
@@ -1179,7 +1371,7 @@ impl ServiceRegistry {
         );
 
         if !service_agent_instance_account_info.data_is_empty() {
-            return Err(Error::from(ErrorCode::AccountServiceAgentIdInstanceExists));
+            return Err(ErrorCode::AccountServiceAgentIdInstanceExists.into());
         }
 
         invoke_signed(
@@ -1237,7 +1429,7 @@ impl ServiceRegistry {
         );
 
         if !agent_instance_operator_account_info.data_is_empty() {
-            return Err(Error::from(ErrorCode::AccountAgentIdInstanceOperatorExists));
+            return Err(ErrorCode::AccountAgentIdInstanceOperatorExists.into());
         }
 
         invoke_signed(
@@ -1293,6 +1485,14 @@ impl ServiceRegistry {
         require!(
             agent_instance_operator_pda == agent_instance_operator_index_account.key(),
             ErrorCode::InvalidPda
+        );
+
+        require!(
+            agent_instance_operator_index_account
+                .agent_instance_operator_pda
+                .len()
+                < MAX_AGENT_INSTANCES_PER_SERVICE,
+            ErrorCode::MaxAgentInstancesPerServiceReached
         );
 
         agent_instance_operator_index_account
@@ -1376,6 +1576,19 @@ impl ServiceRegistry {
 
         Ok(())
     }
+
+    fn close_account<'info>(
+        account: &AccountInfo<'info>,
+        refund_to: &AccountInfo<'info>,
+    ) -> Result<()> {
+        let lamports = account.lamports();
+        if lamports > 0 {
+            **refund_to.try_borrow_mut_lamports()? += lamports;
+            **account.try_borrow_mut_lamports()? = 0;
+        }
+        account.data.borrow_mut().fill(0);
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -1442,7 +1655,7 @@ pub struct RegisterAgentIdsToService<'info> {
     #[account(
         init_if_needed,
         payer = user,
-        space = 8 + (MAX_AGENT_IDS_PER_SERVICE * AgentParamAccount::LEN) + 16, // 8 bytes for Vec metadata + data for MAX_AGENT_IDS_PER_SERVICE u32 agent IDs + 16 bytes Vec overhead
+        space = 8 + (MAX_AGENT_IDS_PER_SERVICE * AgentParamAccount::LEN) + 8, // 8 bytes for Vec metadata + data for MAX_AGENT_IDS_PER_SERVICE u32 agent IDs + 8 bytes Vec overhead
         seeds = [b"service_agent_ids_index", &service.service_id.to_le_bytes()[..]],
         bump,
     )]
@@ -1505,7 +1718,7 @@ pub struct RegisterAgentInstances<'info> {
     #[account(
         init_if_needed,
         payer = user,
-        space = 8 + (MAX_AGENT_INSTANCES_PER_SERVICE * PUBKEY_SIZE) + 16, // 8 bytes for Vec metadata + data for MAX_AGENT_INSTANCES_PER_SERVICE PUBKEY_SIZE agent_instance_operator_pda PDA + 16 bytes Vec overhead
+        space = 8 + (MAX_AGENT_INSTANCES_PER_SERVICE * PUBKEY_SIZE) + 8, // 8 bytes for Vec metadata + data for MAX_AGENT_INSTANCES_PER_SERVICE PUBKEY_SIZE agent_instance_operator_pda PDA + 8 bytes Vec overhead
         seeds = [b"agent_instance_operator_index", &service.service_id.to_le_bytes()[..]],
         bump,
     )]
@@ -1518,6 +1731,30 @@ pub struct RegisterAgentInstances<'info> {
 }
 
 #[derive(Accounts)]
+pub struct TerminateService<'info> {
+    pub registry: Account<'info, ServiceRegistry>,
+    #[account(mut)]
+    pub service: Account<'info, ServiceAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"service_agent_ids_index", &service.service_id.to_le_bytes()[..]],
+        bump,
+    )]
+    pub service_agent_ids_index: Account<'info, ServiceAgentIdsIndex>,
+
+    /// CHECK: PDA wallet owned by the program
+    #[account(mut)]
+    pub registry_wallet: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub service_owner: Signer<'info>,
+
+    #[account(mut, signer)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct UnbondOperator<'info> {
     pub registry: Account<'info, ServiceRegistry>,
 
@@ -1525,6 +1762,7 @@ pub struct UnbondOperator<'info> {
     pub service: Account<'info, ServiceAccount>,
 
     #[account(
+        mut,
         seeds = [b"agent_instance_operator_index", &service.service_id.to_le_bytes()[..]],
         bump,
     )]
