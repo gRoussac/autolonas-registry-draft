@@ -88,7 +88,7 @@ describe('registry', () => {
 
       airdropSignature = await connection.requestAirdrop(
         manager.publicKey,
-        20 * anchor.web3.LAMPORTS_PER_SOL
+        40 * anchor.web3.LAMPORTS_PER_SOL
       );
       await connection.confirmTransaction(airdropSignature);
 
@@ -1792,11 +1792,11 @@ describe('registry', () => {
       expect(operatorBond.bond.toNumber()).to.equal(instancesBond.toNumber());
     });
 
-    it.only('Terminates a service', async () => {
+    it('Terminates a service', async () => {
       const agent_ids_per_service = 1;
       const threshold = 1;
       const agentsToRegister = 1;
-      const config_hash = new Uint8Array(32).fill(16);
+      const config_hash = new Uint8Array(32).fill(17);
 
       const { serviceId, servicePda, agentInstances, programWalletPda } =
         await registerMultipleAgentInstances(
@@ -1807,108 +1807,21 @@ describe('registry', () => {
           agentsToRegister
         );
 
-      const [serviceAgentIdsIndexPDA] =
-        anchor.web3.PublicKey.findProgramAddressSync(
-          [
-            Buffer.from('service_agent_ids_index'),
-            serviceId.toArrayLike(Buffer, 'le', 16),
-          ],
-          program.programId
-        );
-
-      const agent_ids: number[] = Array.from(
-        { length: agent_ids_per_service },
-        (_, i) => i + 1
-      );
-
-      const slotCounterAccounts = [];
-      const agentInstancesAccounts = [];
-      const serviceAgentInstanceAccounts = [];
-
-      for (const agent_id of agent_ids) {
-        const agentId = new anchor.BN(agent_id);
-        const [slotCounterPda] = anchor.web3.PublicKey.findProgramAddressSync(
-          [
-            Buffer.from('service_agent_slot'),
-            serviceId.toArrayLike(Buffer, 'le', 16),
-            agentId.toArrayLike(Buffer, 'le', 4),
-          ],
-          program.programId
-        );
-        slotCounterAccounts.push({
-          pubkey: slotCounterPda,
-          isSigner: false,
-          isWritable: true,
-        });
-
-        const [agentInstancesPda] =
-          anchor.web3.PublicKey.findProgramAddressSync(
-            [
-              Buffer.from('agent_instances'),
-              serviceId.toArrayLike(Buffer, 'le', 16),
-              agentId.toArrayLike(Buffer, 'le', 4),
-            ],
-            program.programId
-          );
-        agentInstancesAccounts.push({
-          pubkey: agentInstancesPda,
-          isSigner: false,
-          isWritable: true,
-        });
-
-        const agentInstancesAccount =
-          await program.account.agentInstancesAccount.fetch(agentInstancesPda);
-
-        assert.equal(
-          agentInstances.length,
-          agentInstancesAccount.agentInstances.length
-        );
-
-        for (const agentInstance of agentInstancesAccount.agentInstances) {
-          const [serviceAgentInstancePda] =
-            anchor.web3.PublicKey.findProgramAddressSync(
-              [
-                Buffer.from('service_agent_instance'),
-                serviceId.toArrayLike(Buffer, 'le', 16),
-                agentId.toArrayLike(Buffer, 'le', 4),
-                agentInstance.toBuffer(),
-              ],
-              program.programId
-            );
-          serviceAgentInstanceAccounts.push({
-            pubkey: serviceAgentInstancePda,
-            isSigner: false,
-            isWritable: true,
-          });
-        }
-      }
-
       const serviceOwnerBalanceBefore = await provider.connection.getBalance(
         ownerService.publicKey
       );
 
-      try {
-        const tx = await program.methods
-          .terminate(new anchor.BN(serviceId))
-          .accounts({
-            registry: registryAccount.publicKey,
-            service: servicePda,
-            serviceOwner: ownerService.publicKey,
-            serviceAgentIdsIndex: serviceAgentIdsIndexPDA,
-            user: manager.publicKey,
-            registryWallet: programWalletPda,
-          })
-          .remainingAccounts([
-            ...slotCounterAccounts,
-            ...agentInstancesAccounts,
-            ...serviceAgentInstanceAccounts,
-          ])
-          .signers([manager, ownerService])
-          .rpc();
-        console.log('Terminate transaction signature:', tx);
-      } catch (error) {
-        console.error('Transaction failed:', error);
-      }
+      const { serviceAgentIdsIndexPDA } = await terminateService({
+        program,
+        registryAccount,
+        serviceId,
+        servicePda,
+        agent_ids_per_service,
+        agentInstances,
+        ownerService,
+        manager,
+        programWalletPda,
+      });
 
       const serviceAfter =
         await program.account.serviceAccount.fetch(servicePda);
@@ -1921,6 +1834,7 @@ describe('registry', () => {
       const serviceOwnerBalanceAfter = await provider.connection.getBalance(
         ownerService.publicKey
       );
+
       assert.ok(serviceOwnerBalanceAfter > serviceOwnerBalanceBefore);
 
       try {
@@ -1931,6 +1845,111 @@ describe('registry', () => {
       } catch (err) {
         assert.ok('Account closed as expected');
       }
+    });
+
+    it.skip('Unbonds a service', async () => {
+      const agent_ids_per_service = 1;
+      const threshold = 1;
+      const agentsToRegister = 1;
+      const config_hash = new Uint8Array(32).fill(18);
+
+      const {
+        serviceId,
+        servicePda,
+        agentInstances,
+        operator,
+        instancesBond,
+        programWalletPda,
+        operatorBondPda,
+      } = await registerMultipleAgentInstances(
+        registryAccount,
+        config_hash,
+        agent_ids_per_service,
+        threshold,
+        agentsToRegister
+      );
+
+      const { serviceAgentIdsIndexPDA } = await terminateService({
+        program,
+        registryAccount,
+        serviceId,
+        servicePda,
+        agent_ids_per_service,
+        agentInstances,
+        ownerService,
+        manager,
+        programWalletPda,
+      });
+
+      const [operatorAgentInstanceIndexPda] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('operator_agent_instance_index'),
+            serviceId.toArrayLike(Buffer, 'le', 16),
+            operator.publicKey.toBuffer(),
+          ],
+          program.programId
+        );
+
+      const operatorBondBefore =
+        await program.account.operatorBondAccount.fetch(operatorBondPda);
+      expect(operatorBondBefore.bond.toNumber()).to.equal(instancesBond);
+
+      const operatorBalanceBefore = await provider.connection.getBalance(
+        operator.publicKey
+      );
+      expect(operatorBalanceBefore).to.be.greaterThan(0);
+
+      console.log(operatorBalanceBefore);
+
+      await program.methods
+        .unbond(serviceId)
+        .accounts({
+          registry: registryAccount.publicKey,
+          service: servicePda,
+          operator: operator.publicKey,
+          operatorBond: operatorBondPda,
+          operatorAgentInstanceIndex: operatorAgentInstanceIndexPda,
+          user: manager.publicKey,
+          registryWallet: programWalletPda,
+        })
+        .signers([manager, operator])
+        .remainingAccounts(
+          agentInstances.map((pda) => ({
+            pubkey: pda.publicKey,
+            isSigner: false,
+            isWritable: true,
+          }))
+        )
+        .rpc();
+
+      // Operator bond must be wiped to 0
+      // const operatorBondAfter =
+      //   await program.account.operatorBondAccount.fetch(operatorBondPda);
+      // expect(operatorBondAfter.bond.toNumber()).to.equal(0);
+
+      // Operator's lamport balance must have increased
+      const operatorBalance = await provider.connection.getBalance(
+        operator.publicKey
+      );
+      expect(operatorBalance).to.be.greaterThan(operatorBalanceBefore);
+
+      console.log(operatorBalance);
+
+      // Service must be in PreRegistration state again
+      const serviceAccount =
+        await program.account.serviceAccount.fetch(servicePda);
+      expect(serviceAccount.state.terminatedBonded).to.be.undefined;
+      expect(serviceAccount.state.preRegistration).to.not.be.undefined;
+
+      // OperatorAgentInstanceIndex should be empty
+      const operatorAgentInstanceIndexAfter =
+        await program.account.operatorAgentInstanceIndex.fetch(
+          operatorAgentInstanceIndexPda
+        );
+      // expect(
+      //   operatorAgentInstanceIndexAfter.operatorAgentInstancePda.length
+      // ).to.equal(0);
     });
   });
 
@@ -2183,7 +2202,7 @@ describe('registry', () => {
     await connection.confirmTransaction(airdropSignature);
 
     const [operatorAsAgentPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from('agent_instances'), operator.publicKey.toBuffer()],
+      [Buffer.from('agent_instances_index'), operator.publicKey.toBuffer()],
       program.programId
     );
 
@@ -2197,7 +2216,7 @@ describe('registry', () => {
 
       const [agentInstancesPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
-          Buffer.from('agent_instances'),
+          Buffer.from('agent_instances_index'),
           serviceId.toArrayLike(Buffer, 'le', 16),
           agentId.toArrayLike(Buffer, 'le', 4),
         ],
@@ -2216,7 +2235,7 @@ describe('registry', () => {
       const [serviceAgentInstancePda] =
         anchor.web3.PublicKey.findProgramAddressSync(
           [
-            Buffer.from('service_agent_instance'),
+            Buffer.from('service_agent_instance_account'),
             serviceId.toArrayLike(Buffer, 'le', 16),
             agentId.toArrayLike(Buffer, 'le', 4),
             agentInstance.publicKey.toBuffer(),
@@ -2224,10 +2243,10 @@ describe('registry', () => {
           program.programId
         );
 
-      const [agentInstanceOperatorPda] =
+      const [operatorAgentInstancePda] =
         anchor.web3.PublicKey.findProgramAddressSync(
           [
-            Buffer.from('agent_instance_operator'),
+            Buffer.from('operator_agent_instance'),
             agentInstance.publicKey.toBuffer(),
             operator.publicKey.toBuffer(),
           ],
@@ -2238,7 +2257,7 @@ describe('registry', () => {
         agentInstancesPda,
         slotCounterPda,
         serviceAgentInstancePda,
-        agentInstanceOperatorPda
+        operatorAgentInstancePda
       );
     }
 
@@ -2252,10 +2271,13 @@ describe('registry', () => {
     );
     pdaList.push(operatorBondPda);
 
-    const serviceIdSeed = serviceId.toArrayLike(Buffer, 'le', 16);
-    const [agentInstanceOperatorIndexPda] =
+    const [operatorAgentInstanceIndexPda] =
       anchor.web3.PublicKey.findProgramAddressSync(
-        [Buffer.from('agent_instance_operator_index'), serviceIdSeed],
+        [
+          Buffer.from('operator_agent_instance_index'),
+          serviceId.toArrayLike(Buffer, 'le', 16),
+          operator.publicKey.toBuffer(),
+        ],
         program.programId
       );
 
@@ -2270,7 +2292,7 @@ describe('registry', () => {
         service: servicePda,
         user: manager.publicKey,
         registryWallet: programWalletPda,
-        agentInstanceOperatorIndex: agentInstanceOperatorIndexPda,
+        operatorAgentInstanceIndex: operatorAgentInstanceIndexPda,
       })
       .remainingAccounts(
         pdaList.map((pda, idx) => ({
@@ -2283,5 +2305,126 @@ describe('registry', () => {
       .rpc();
 
     return { agentInstances, operator, instancesBond, operatorBondPda };
+  }
+
+  async function terminateService({
+    program,
+    registryAccount,
+    serviceId,
+    servicePda,
+    agent_ids_per_service,
+    agentInstances,
+    ownerService,
+    manager,
+    programWalletPda,
+  }: {
+    program: any;
+    registryAccount: any;
+    serviceId: anchor.BN;
+    servicePda: anchor.web3.PublicKey;
+    agent_ids_per_service: number;
+    agentInstances: anchor.web3.Keypair[];
+    ownerService: anchor.web3.Keypair;
+    manager: anchor.web3.Keypair;
+    programWalletPda: anchor.web3.PublicKey;
+  }) {
+    const [serviceAgentIdsIndexPDA] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('service_agent_ids_index'),
+          serviceId.toArrayLike(Buffer, 'le', 16),
+        ],
+        program.programId
+      );
+
+    const agent_ids: number[] = Array.from(
+      { length: agent_ids_per_service },
+      (_, i) => i + 1
+    );
+
+    const slotCounterAccounts = [];
+    const serviceAgentInstanceIndexAccounts = [];
+    const serviceAgentInstancePDAs = [];
+
+    for (const agent_id of agent_ids) {
+      const agentId = new anchor.BN(agent_id);
+      const [slotCounterPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('service_agent_slot'),
+          serviceId.toArrayLike(Buffer, 'le', 16),
+          agentId.toArrayLike(Buffer, 'le', 4),
+        ],
+        program.programId
+      );
+      slotCounterAccounts.push({
+        pubkey: slotCounterPda,
+        isSigner: false,
+        isWritable: true,
+      });
+
+      const [agentInstancesPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('agent_instances_index'),
+          serviceId.toArrayLike(Buffer, 'le', 16),
+          agentId.toArrayLike(Buffer, 'le', 4),
+        ],
+        program.programId
+      );
+      serviceAgentInstanceIndexAccounts.push({
+        pubkey: agentInstancesPda,
+        isSigner: false,
+        isWritable: true,
+      });
+
+      const serviceAgentInstancesIndex =
+        await program.account.serviceAgentInstancesIndex.fetch(
+          agentInstancesPda
+        );
+
+      assert.equal(
+        agentInstances.map((k) => k.publicKey).length,
+        serviceAgentInstancesIndex.serviceAgentInstances.length
+      );
+
+      for (const agentInstance of serviceAgentInstancesIndex.serviceAgentInstances) {
+        const [serviceAgentInstancePda] =
+          anchor.web3.PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('service_agent_instance_account'),
+              serviceId.toArrayLike(Buffer, 'le', 16),
+              agentId.toArrayLike(Buffer, 'le', 4),
+              agentInstance.toBuffer(),
+            ],
+            program.programId
+          );
+        serviceAgentInstancePDAs.push({
+          pubkey: serviceAgentInstancePda,
+          isSigner: false,
+          isWritable: true,
+        });
+      }
+    }
+
+    await program.methods
+      .terminate(new anchor.BN(serviceId))
+      .accounts({
+        registry: registryAccount.publicKey,
+        service: servicePda,
+        serviceOwner: ownerService.publicKey,
+        serviceAgentIdsIndex: serviceAgentIdsIndexPDA,
+        user: manager.publicKey,
+        registryWallet: programWalletPda,
+      })
+      .remainingAccounts([
+        ...slotCounterAccounts,
+        ...serviceAgentInstanceIndexAccounts,
+        ...serviceAgentInstancePDAs,
+      ])
+      .signers([manager, ownerService])
+      .rpc();
+
+    return {
+      serviceAgentIdsIndexPDA,
+    };
   }
 });
