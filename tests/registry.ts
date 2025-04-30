@@ -1893,7 +1893,9 @@ describe('registry', () => {
 
       const operatorBondBefore =
         await program.account.operatorBondAccount.fetch(operatorBondPda);
-      expect(operatorBondBefore.bond.toNumber()).to.equal(instancesBond);
+      expect(operatorBondBefore.bond.toNumber()).to.equal(
+        instancesBond.toNumber()
+      );
 
       const operatorBalanceBefore = await provider.connection.getBalance(
         operator.publicKey
