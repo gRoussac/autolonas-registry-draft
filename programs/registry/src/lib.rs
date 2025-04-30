@@ -972,36 +972,35 @@ pub mod registry {
             let operator_agent_instance_info =
                 next_account_info(&mut ctx.remaining_accounts.iter())?;
 
-            // // Validate PDA
-            // require!(
-            //     operator_agent_instance_pda == &operator_agent_instance_info.key(),
-            //     ErrorCode::InvalidPda
-            // );
+            require!(
+                operator_agent_instance_pda == &operator_agent_instance_info.key(),
+                ErrorCode::InvalidPda
+            );
 
-            // // Close operator_agent_instance
-            // ServiceRegistry::close_account(operator_agent_instance_info, &ctx.accounts.user)?;
+            ServiceRegistry::close_account(operator_agent_instance_info, &ctx.accounts.user)?;
         }
 
-        // operator_agent_instance_index
-        //     .operator_agent_instance_pda
-        //     .clear();
-        // if operator_agent_instance_index
-        //     .operator_agent_instance_pda
-        //     .is_empty()
-        // {
-        //     ServiceRegistry::close_account(
-        //         &operator_agent_instance_index.to_account_info(),
-        //         &ctx.accounts.user,
-        //     )?;
-        // }
+        operator_agent_instance_index
+            .operator_agent_instances
+            .clear();
+
+        if operator_agent_instance_index
+            .operator_agent_instances
+            .is_empty()
+        {
+            ServiceRegistry::close_account(
+                &operator_agent_instance_index.to_account_info(),
+                &ctx.accounts.user,
+            )?;
+        }
 
         // Emit event
-        // emit!(OperatorUnbonded {
-        //     operator: operator.key(),
-        //     service_id,
-        //     refund,
-        // });
-        assert_eq!(1, 2);
+        emit!(OperatorUnbonded {
+            operator: operator.key(),
+            service_id,
+            refund,
+        });
+
         registry.locked = false;
         Ok(())
     }
@@ -1458,7 +1457,7 @@ impl ServiceRegistry {
 
         let mut data = operator_agent_instance_account_info.try_borrow_mut_data()?;
         let discriminator = &anchor_lang::solana_program::hash::hash(
-            "account:OperatoAgentInstanceAccount".as_bytes(),
+            "account:OperatorAgentInstanceAccount".as_bytes(),
         )
         .to_bytes()[..8];
         data[..8].copy_from_slice(discriminator);
@@ -1471,7 +1470,7 @@ impl ServiceRegistry {
         );
 
         //  Push in operator_agent_instance_index
-        let (operator_agent_instance_pda, _aoperator_agent_instance_bump) =
+        let (operator_agent_instance_index_pda, _operator_agent_instance_index_bump) =
             Pubkey::find_program_address(
                 &[
                     b"operator_agent_instance_index",
@@ -1482,7 +1481,7 @@ impl ServiceRegistry {
             );
 
         require!(
-            operator_agent_instance_pda == operator_agent_instance_index.key(),
+            operator_agent_instance_index_pda == operator_agent_instance_index.key(),
             ErrorCode::InvalidPda
         );
 

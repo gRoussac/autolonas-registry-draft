@@ -1847,7 +1847,7 @@ describe('registry', () => {
       }
     });
 
-    it.skip('Unbonds a service', async () => {
+    it('Unbonds a service', async () => {
       const agent_ids_per_service = 1;
       const threshold = 1;
       const agentsToRegister = 1;
@@ -1869,7 +1869,7 @@ describe('registry', () => {
         agentsToRegister
       );
 
-      const { serviceAgentIdsIndexPDA } = await terminateService({
+      await terminateService({
         program,
         registryAccount,
         serviceId,
@@ -1902,7 +1902,38 @@ describe('registry', () => {
       );
       expect(operatorBalanceBefore).to.be.greaterThan(0);
 
-      console.log(operatorBalanceBefore);
+      //console.debug(operatorBalanceBefore);
+
+      const operatorAgentInstanceIndexAccount =
+        await program.account.operatorAgentInstanceIndex.fetch(
+          operatorAgentInstanceIndexPda
+        );
+
+      const remainingAccounts = [];
+
+      for (const operatorAgentInstancePda of operatorAgentInstanceIndexAccount.operatorAgentInstances) {
+        try {
+          const operatorAgentInstance =
+            await program.account.operatorAgentInstanceAccount.fetch(
+              operatorAgentInstancePda
+            );
+          if (operatorAgentInstance.operator.equals(operator.publicKey)) {
+            remainingAccounts.push({
+              pubkey: operatorAgentInstancePda,
+              isWritable: true,
+              isSigner: false,
+            });
+          }
+        } catch (e) {
+          console.warn(
+            'Invalid PDA in index:',
+            operatorAgentInstancePda.toBase58(),
+            e
+          );
+        }
+      }
+
+      assert.equal(remainingAccounts.length, agentInstances.length);
 
       await program.methods
         .unbond(serviceId)
@@ -1915,20 +1946,14 @@ describe('registry', () => {
           user: manager.publicKey,
           registryWallet: programWalletPda,
         })
+        .remainingAccounts(remainingAccounts)
         .signers([manager, operator])
-        .remainingAccounts(
-          agentInstances.map((pda) => ({
-            pubkey: pda.publicKey,
-            isSigner: false,
-            isWritable: true,
-          }))
-        )
         .rpc();
 
-      // Operator bond must be wiped to 0
-      // const operatorBondAfter =
-      //   await program.account.operatorBondAccount.fetch(operatorBondPda);
-      // expect(operatorBondAfter.bond.toNumber()).to.equal(0);
+      // Operator bond must be wiped
+      let deletedAccount =
+        await provider.connection.getAccountInfo(operatorBondPda);
+      expect(deletedAccount).to.be.null;
 
       // Operator's lamport balance must have increased
       const operatorBalance = await provider.connection.getBalance(
@@ -1936,7 +1961,7 @@ describe('registry', () => {
       );
       expect(operatorBalance).to.be.greaterThan(operatorBalanceBefore);
 
-      console.log(operatorBalance);
+      //console.debug(operatorBalance);
 
       // Service must be in PreRegistration state again
       const serviceAccount =
@@ -1944,14 +1969,11 @@ describe('registry', () => {
       expect(serviceAccount.state.terminatedBonded).to.be.undefined;
       expect(serviceAccount.state.preRegistration).to.not.be.undefined;
 
-      // OperatorAgentInstanceIndex should be empty
-      const operatorAgentInstanceIndexAfter =
-        await program.account.operatorAgentInstanceIndex.fetch(
-          operatorAgentInstanceIndexPda
-        );
-      // expect(
-      //   operatorAgentInstanceIndexAfter.operatorAgentInstancePda.length
-      // ).to.equal(0);
+      // OperatorAgentInstanceIndex should be wiped
+      deletedAccount = await provider.connection.getAccountInfo(
+        operatorAgentInstanceIndexPda
+      );
+      expect(deletedAccount).to.be.null;
     });
   });
 
