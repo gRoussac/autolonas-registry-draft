@@ -166,8 +166,9 @@ pub mod registry {
     use crate::{
         error::ErrorCode,
         events::{
-            ActivateRegistrationEvent, CreateServiceEvent, DrainerUpdatedEvent, OperatorUnbonded,
-            Refunded, RegisterAgentIdsEvent, ServiceTerminated, UpdateServiceEvent,
+            ActivateRegistrationEvent, CreateServiceEvent, DrainEvent, DrainerUpdatedEvent,
+            OperatorUnbonded, Refunded, RegisterAgentIdsEvent, ServiceTerminated,
+            UpdateServiceEvent,
         },
     };
     use anchor_lang::solana_program::system_instruction::transfer;
@@ -500,6 +501,80 @@ pub mod registry {
         emit!(DrainerUpdatedEvent { new_drainer });
 
         Ok(())
+    }
+
+    pub fn drain(ctx: Context<Drain>) -> Result<u64> {
+        let registry = &mut ctx.accounts.registry;
+        let drainer = &ctx.accounts.drainer;
+
+        // Reentrancy guard (same concept as Solidity, using a lock mechanism)
+        if registry.locked {
+            return Err(ErrorCode::ReentrancyGuard.into());
+        }
+        registry.locked = true;
+
+        // Check if the caller is the correct drainer
+        if drainer.key() != registry.drainer {
+            return Err(ProgramError::IllegalOwner.into());
+        }
+
+        let amount = registry.slashed_funds;
+        if amount > 0 {
+            registry.slashed_funds = 0;
+
+            let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
+                &[b"registry_wallet", &registry.key().to_bytes()],
+                ctx.program_id,
+            );
+
+            require_eq!(
+                registry_wallet_pda,
+                ctx.accounts.registry_wallet.key(),
+                ErrorCode::WrongRegistryWallet
+            );
+
+            require_eq!(
+                registry_wallet_pda,
+                registry.wallet_key,
+                ErrorCode::WrongRegistryWallet
+            );
+
+            require_eq!(
+                registry_wallet_bump,
+                registry.wallet_bump,
+                ErrorCode::WrongRegistryWallet
+            );
+
+            // Do the transfer
+            let transfer_instruction = system_instruction::transfer(
+                &registry_wallet_pda,
+                &ctx.accounts.drainer.key(),
+                amount,
+            );
+
+            invoke_signed(
+                &transfer_instruction,
+                &[
+                    ctx.accounts.registry_wallet.to_account_info(),
+                    ctx.accounts.drainer.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+                &[&[
+                    b"registry_wallet",
+                    registry.key().as_ref(),
+                    &[registry_wallet_bump],
+                ]],
+            )?;
+
+            emit!(DrainEvent {
+                drainer: ctx.accounts.drainer.key(),
+                amount,
+            });
+        }
+
+        registry.locked = false;
+
+        Ok(amount)
     }
 
     pub fn check_service(ctx: Context<CheckService>, service_id: u128) -> Result<()> {
@@ -854,6 +929,29 @@ pub mod registry {
         // Refund security deposit
         let refund = service.security_deposit;
 
+        let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
+            &[b"registry_wallet", &registry.key().to_bytes()],
+            ctx.program_id,
+        );
+
+        require_eq!(
+            registry_wallet_pda,
+            ctx.accounts.registry_wallet.key(),
+            ErrorCode::WrongRegistryWallet
+        );
+
+        require_eq!(
+            registry_wallet_pda,
+            registry.wallet_key,
+            ErrorCode::WrongRegistryWallet
+        );
+
+        require_eq!(
+            registry_wallet_bump,
+            registry.wallet_bump,
+            ErrorCode::WrongRegistryWallet
+        );
+
         if refund > 0 {
             service.security_deposit = 0;
 
@@ -948,6 +1046,29 @@ pub mod registry {
         let refund: u64 = operator_bond.bond;
 
         msg!(&refund.to_string());
+
+        let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
+            &[b"registry_wallet", &registry.key().to_bytes()],
+            ctx.program_id,
+        );
+
+        require_eq!(
+            registry_wallet_pda,
+            ctx.accounts.registry_wallet.key(),
+            ErrorCode::WrongRegistryWallet
+        );
+
+        require_eq!(
+            registry_wallet_pda,
+            registry.wallet_key,
+            ErrorCode::WrongRegistryWallet
+        );
+
+        require_eq!(
+            registry_wallet_bump,
+            registry.wallet_bump,
+            ErrorCode::WrongRegistryWallet
+        );
 
         // Only proceed if there's something to refund
         if refund > 0 {
@@ -1777,6 +1898,21 @@ pub struct UnbondOperator<'info> {
 
     #[account(mut)]
     pub user: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Drain<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, ServiceRegistry>,
+
+    #[account(mut)]
+    pub drainer: Signer<'info>,
+
+    /// CHECK: PDA wallet owned by the program
+    #[account(mut)]
+    pub registry_wallet: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
 }

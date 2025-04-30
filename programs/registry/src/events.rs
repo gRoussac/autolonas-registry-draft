@@ -61,3 +61,9 @@ pub struct OperatorUnbonded {
     pub service_id: u128,
     pub refund: u64,
 }
+
+#[event]
+pub struct DrainEvent {
+    pub drainer: Pubkey,
+    pub amount: u64,
+}
