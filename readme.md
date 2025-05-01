@@ -1,3 +1,4 @@
+```text
 Service
 │
 ├── ServiceAgentIdsIndex
@@ -29,3 +30,4 @@ Operator
 ├── service_id
 ├── operator
 └── bond
+```
