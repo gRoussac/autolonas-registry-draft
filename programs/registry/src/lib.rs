@@ -8,72 +8,20 @@ use anchor_lang::{
     AccountDeserialize, Discriminator,
 };
 
+mod constants;
 pub mod error;
 pub mod events;
+mod pda;
+mod service_state;
+mod state;
+use constants::*;
 use error::ErrorCode;
-use events::{Deposit, RegisterInstance};
-
-const MAX_AGENT_IDS_PER_SERVICE: usize = 128;
-const MAX_AGENT_INSTANCES_PER_SERVICE: usize = 192;
+use events::*;
+use pda::*;
+use service_state::ServiceState;
+use state::*;
 
 declare_id!("9Q2mQxDLH91HLaQUYyxV5n9WhA1jzgVThJwfJTNqEUNP");
-
-const STRING_PREFIX_SIZE: usize = 4;
-const MAX_NAME_LENGTH: usize = 256;
-const MAX_SYMBOL_LENGTH: usize = 64;
-const MAX_URI_LENGTH: usize = 512;
-const PUBKEY_SIZE: usize = 32;
-const U64_SIZE: usize = 8;
-const U128_SIZE: usize = 16;
-const BOOL_SIZE: usize = 1;
-const U8_SIZE: usize = 1;
-const FIXED_SIZE: usize = 32;
-
-#[account]
-pub struct ServiceRegistry {
-    pub name: String,       // 4 bytes (length prefix) + max_len
-    pub symbol: String,     // 4 bytes + max_len
-    pub base_uri: String,   // 4 bytes + max_len
-    pub owner: Pubkey,      // 32 bytes
-    pub manager: Pubkey,    // 32 bytes
-    pub drainer: Pubkey,    // 32 bytes
-    pub slashed_funds: u64, // 8 bytes
-    pub total_supply: u128, // 16 bytes
-    pub version: String,    // 4 bytes + FIXED_SIZE
-    pub locked: bool,       // 1 byte
-    pub wallet_key: Pubkey, // 32 bytes
-    pub wallet_bump: u8,    // 1 byte
-}
-
-const REGISTRY_ACCOUNT_SIZE: usize = STRING_PREFIX_SIZE // name prefix
-    + MAX_NAME_LENGTH   // name
-    + STRING_PREFIX_SIZE// symbol prefix
-    + MAX_SYMBOL_LENGTH // symbol
-    + STRING_PREFIX_SIZE // base_uri prefix
-    + MAX_URI_LENGTH // base_uri
-    + PUBKEY_SIZE // owner
-    + PUBKEY_SIZE // manager
-    + PUBKEY_SIZE // drainer
-    + U64_SIZE // slashed_funds
-    + U128_SIZE // total_supply
-    + STRING_PREFIX_SIZE // version prefix
-    + FIXED_SIZE // version fixed size
-    + BOOL_SIZE // locked
-    + PUBKEY_SIZE // wallet_key
-    + U8_SIZE; // wallet_bump
-
-#[account]
-pub struct ServiceAccount {
-    pub service_id: u128,             // 16 bytes
-    pub service_owner: Pubkey,        // 32 bytes
-    pub security_deposit: u64,        // 8 bytes
-    pub multisig: Pubkey,             // 32 bytes
-    pub config_hash: [u8; 32],        // 32 bytes
-    pub threshold: u32,               // 4 bytes
-    pub max_num_agent_instances: u32, // 4 bytes
-    pub num_agent_instances: u32,     // 4 bytes
-    pub state: ServiceState,          // 1 byte
-}
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
 pub struct AgentParams {
@@ -81,97 +29,9 @@ pub struct AgentParams {
     pub bond: u64,
 }
 
-#[account]
-pub struct AgentParamAccount {
-    pub agent_id: u32,
-    pub slots: u32,
-    pub bond: u64,
-}
-
-impl AgentParamAccount {
-    pub const LEN: usize = 8 + 4 + 4 + U64_SIZE;
-}
-
-#[account]
-pub struct ServiceAgentIdsIndex {
-    pub agent_ids: Vec<AgentParamAccount>,
-}
-
-#[account]
-pub struct ServiceAgentInstanceAccount {
-    pub service_id: u128,
-    pub agent_id: u32,
-    pub agent_instance: Pubkey,
-}
-
-impl ServiceAgentInstanceAccount {
-    pub const LEN: usize = 8 + U128_SIZE + 4 + PUBKEY_SIZE;
-}
-
-#[account]
-pub struct ServiceAgentSlotCounterAccount {
-    pub count: u8,
-}
-
-#[account]
-pub struct ServiceAgentInstancesIndex {
-    pub service_agent_instances: Vec<Pubkey>,
-}
-
-impl ServiceAgentInstancesIndex {
-    pub const LEN: usize = 8 + U128_SIZE + 4 + 8 + (MAX_AGENT_INSTANCES_PER_SERVICE * PUBKEY_SIZE);
-}
-
-#[account]
-pub struct OperatorAgentInstanceAccount {
-    pub operator: Pubkey,
-    pub service_agent_instance: Pubkey,
-}
-
-impl OperatorAgentInstanceAccount {
-    pub const LEN: usize = 8 + PUBKEY_SIZE + PUBKEY_SIZE;
-}
-
-#[account]
-pub struct OperatorAgentInstanceIndex {
-    pub operator_agent_instances: Vec<Pubkey>,
-}
-
-#[account]
-pub struct OperatorBondAccount {
-    pub service_id: u128,
-    pub operator: Pubkey,
-    pub bond: u64,
-}
-
-impl OperatorBondAccount {
-    pub const LEN: usize = 8 + U128_SIZE + PUBKEY_SIZE + U64_SIZE;
-}
-
-#[repr(u8)]
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default, PartialEq)]
-pub enum ServiceState {
-    #[default]
-    NonExistent,
-    PreRegistration,
-    ActiveRegistration,
-    FinishedRegistration,
-    Deployed,
-    TerminatedBonded,
-}
-
 #[program]
 pub mod registry {
     use super::*;
-    use crate::{
-        error::ErrorCode,
-        events::{
-            ActivateRegistrationEvent, CreateServiceEvent, DrainEvent, DrainerUpdatedEvent,
-            OperatorSlashed, OperatorUnbonded, Refunded, RegisterAgentIdsEvent, ServiceTerminated,
-            UpdateServiceEvent,
-        },
-    };
-    use anchor_lang::solana_program::system_instruction::transfer;
 
     pub fn initialize(
         ctx: Context<Initialize>,
@@ -194,10 +54,7 @@ pub mod registry {
         registry.version = "1.0.0".into();
         registry.wallet_key = registry_wallet.key();
 
-        let (_, bump_registry_wallet) = Pubkey::find_program_address(
-            &[b"registry_wallet", &registry.key().to_bytes()],
-            ctx.program_id,
-        );
+        let (_, bump_registry_wallet) = registry_wallet_pda(&registry.key(), ctx.program_id);
 
         registry.wallet_bump = bump_registry_wallet;
 
@@ -342,14 +199,8 @@ pub mod registry {
 
             let agent_param_account_info = next_account_info(&mut remaining_accounts)?;
 
-            let (agent_param_pda, agent_param_bump) = Pubkey::find_program_address(
-                &[
-                    b"agent_param",
-                    &service.service_id.to_le_bytes(),
-                    &agent_id.to_le_bytes(),
-                ],
-                program_id,
-            );
+            let (agent_param_pda, agent_param_bump) =
+                agent_param_pda(service.service_id, agent_id, ctx.program_id);
 
             require!(
                 agent_param_pda == agent_param_account_info.key(),
@@ -522,10 +373,8 @@ pub mod registry {
         if amount > 0 {
             registry.slashed_funds = 0;
 
-            let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
-                &[b"registry_wallet", &registry.key().to_bytes()],
-                ctx.program_id,
-            );
+            let (registry_wallet_pda, registry_wallet_bump) =
+                registry_wallet_pda(&registry.key(), ctx.program_id);
 
             require_eq!(
                 registry_wallet_pda,
@@ -614,14 +463,7 @@ pub mod registry {
             let operator = operator_account.operator;
 
             let (operator_agent_instance_pda, _operator_agent_instance_bump) =
-                Pubkey::find_program_address(
-                    &[
-                        b"operator_agent_instance",
-                        &agent_instance.to_bytes(),
-                        &operator.to_bytes(),
-                    ],
-                    ctx.program_id,
-                );
+                operator_agent_instance_pda(agent_instance, agent_instance, &operator);
 
             require!(
                 operator_agent_instance_pda == operator_agent_instance_info.key(),
@@ -633,14 +475,8 @@ pub mod registry {
             let mut operator_bond_account: Account<OperatorBondAccount> =
                 Account::try_from(operator_bond_info)?;
 
-            let (operator_bond_pda, _operator_bond_bump) = Pubkey::find_program_address(
-                &[
-                    b"operator_bond",
-                    &service_id.to_le_bytes(),
-                    &operator.to_bytes(),
-                ],
-                ctx.program_id,
-            );
+            let (operator_bond_pda, _operator_bond_bump) =
+                operator_bond_pda(service_id, &operator.key(), ctx.program_id);
 
             require!(
                 operator_bond_pda == operator_bond_info.key(),
@@ -673,10 +509,7 @@ pub mod registry {
     pub fn check_service(ctx: Context<CheckService>, service_id: u128) -> Result<()> {
         let service_account = &ctx.accounts.service;
         // Find the Service Account PDA
-        let (service_pda, _bump) = Pubkey::find_program_address(
-            &[b"service", &service_account.config_hash[..7]],
-            ctx.program_id,
-        );
+        let (service_pda, _bump) = service_pda(&service_account.config_hash, ctx.program_id);
 
         // Use the service PDA to load the service account
         // Ensure the service account is the expected one
@@ -685,10 +518,8 @@ pub mod registry {
 
         let service_agent_ids_index = &mut ctx.accounts.service_agent_ids_index;
 
-        let (expected_pda, _bump) = Pubkey::find_program_address(
-            &[b"service_agent_ids_index", &service_id.to_le_bytes()],
-            ctx.program_id,
-        );
+        let (expected_pda, _bump) =
+            service_agent_ids_index_pda(service_account.service_id, ctx.program_id);
 
         require!(
             service_agent_ids_index.key() == expected_pda,
@@ -736,10 +567,8 @@ pub mod registry {
         );
 
         // Transfer the bond from user account to the program's wallet
-        let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
-            &[b"registry_wallet", &registry.key().to_bytes()],
-            ctx.program_id,
-        );
+        let (registry_wallet_pda, registry_wallet_bump) =
+            registry_wallet_pda(&registry.key(), ctx.program_id);
 
         require_eq!(
             registry_wallet_pda,
@@ -963,14 +792,8 @@ pub mod registry {
         // Cleanup all agent instance PDAs
         for param in &service_agent_ids_index.agent_ids {
             // 1. Close the slot_counter PDA
-            let (slot_counter_pda, _) = Pubkey::find_program_address(
-                &[
-                    b"service_agent_slot",
-                    &service_id.to_le_bytes(),
-                    &param.agent_id.to_le_bytes(),
-                ],
-                ctx.program_id,
-            );
+            let (slot_counter_pda, _) =
+                service_agent_slot_counter_pda(service.service_id, param.agent_id, ctx.program_id);
 
             let slot_counter_info = next_account_info(&mut remaining_accounts_iter)?;
             require!(
@@ -980,14 +803,8 @@ pub mod registry {
             ServiceRegistry::close_account(slot_counter_info, &ctx.accounts.user)?;
 
             // 2. Close the agent_instances PDA
-            let (agent_instances_pda, _) = Pubkey::find_program_address(
-                &[
-                    b"agent_instances_index",
-                    &service_id.to_le_bytes(),
-                    &param.agent_id.to_le_bytes(),
-                ],
-                ctx.program_id,
-            );
+            let (agent_instances_pda, _) =
+                agent_instances_index_pda(service.service_id, param.agent_id, ctx.program_id);
 
             let agent_instances_info = next_account_info(&mut remaining_accounts_iter)?;
             require!(
@@ -1000,13 +817,10 @@ pub mod registry {
                 Account::try_from(agent_instances_info)?;
 
             for agent_instance in agent_instances_account_index.service_agent_instances.iter() {
-                let (service_agent_instance_pda, _) = Pubkey::find_program_address(
-                    &[
-                        b"service_agent_instance_account",
-                        &service_id.to_le_bytes(),
-                        &param.agent_id.to_le_bytes(),
-                        &agent_instance.to_bytes(),
-                    ],
+                let (service_agent_instance_pda, _) = service_agent_instance_pda(
+                    service.service_id,
+                    param.agent_id,
+                    agent_instance,
                     ctx.program_id,
                 );
 
@@ -1024,10 +838,8 @@ pub mod registry {
         // Refund security deposit
         let refund = service.security_deposit;
 
-        let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
-            &[b"registry_wallet", &registry.key().to_bytes()],
-            ctx.program_id,
-        );
+        let (registry_wallet_pda, registry_wallet_bump) =
+            registry_wallet_pda(&registry.key(), ctx.program_id);
 
         require_eq!(
             registry_wallet_pda,
@@ -1124,14 +936,8 @@ pub mod registry {
         }
 
         // Refund logic
-        let (operator_bond_pda, _operator_bond_bump) = Pubkey::find_program_address(
-            &[
-                b"operator_bond",
-                &service_id.to_le_bytes(),
-                &operator.key().to_bytes(),
-            ],
-            ctx.program_id,
-        );
+        let (operator_bond_pda, _operator_bond_bump) =
+            operator_bond_pda(service_id, &operator.key(), ctx.program_id);
 
         require!(
             operator_bond_pda == operator_bond.key(),
@@ -1142,10 +948,8 @@ pub mod registry {
 
         msg!(&refund.to_string());
 
-        let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
-            &[b"registry_wallet", &registry.key().to_bytes()],
-            ctx.program_id,
-        );
+        let (registry_wallet_pda, registry_wallet_bump) =
+            registry_wallet_pda(&registry.key(), ctx.program_id);
 
         require_eq!(
             registry_wallet_pda,
@@ -1344,10 +1148,8 @@ impl ServiceRegistry {
             ErrorCode::IncorrectRegistrationDepositValue
         );
 
-        let (registry_wallet_pda, registry_wallet_bump) = Pubkey::find_program_address(
-            &[b"registry_wallet", &registry.key().to_bytes()],
-            program_id,
-        );
+        let (registry_wallet_pda, registry_wallet_bump) =
+            registry_wallet_pda(&registry.key(), program_id);
 
         require_eq!(
             registry_wallet_pda,
@@ -1406,10 +1208,7 @@ impl ServiceRegistry {
             return Err(ProgramError::InvalidArgument.into());
         }
 
-        let (operator_as_agent_pda, _) = Pubkey::find_program_address(
-            &[b"agent_instances_index", &operator.to_bytes()],
-            &program_id,
-        );
+        let (operator_as_agent_pda, _) = operator_as_agent_index_pda(&operator, &program_id);
 
         let operator_check_account_info = next_account_info(remaining_accounts)?;
 
@@ -1442,14 +1241,8 @@ impl ServiceRegistry {
         let service_id = service.service_id;
 
         // 1. Global agent_instances
-        let (agent_instances_pda, agent_instances_bump) = Pubkey::find_program_address(
-            &[
-                b"agent_instances_index",
-                &service_id.to_le_bytes(),
-                &agent_id.to_le_bytes(),
-            ],
-            program_id,
-        );
+        let (agent_instances_pda, agent_instances_bump) =
+            agent_instances_index_pda(service.service_id, agent_id, program_id);
 
         let agent_instances_account_info = next_account_info(remaining_accounts)?;
 
@@ -1508,14 +1301,8 @@ impl ServiceRegistry {
         agent_instances_index.serialize(&mut &mut data[8..])?;
 
         //  2. Slot counter
-        let (slot_counter_pda, slot_counter_bump) = Pubkey::find_program_address(
-            &[
-                b"service_agent_slot",
-                &service_id.to_le_bytes(),
-                &agent_id.to_le_bytes(),
-            ],
-            program_id,
-        );
+        let (slot_counter_pda, slot_counter_bump) =
+            service_agent_slot_counter_pda(service.service_id, agent_id, program_id);
 
         let slot_counter_info = next_account_info(remaining_accounts)?;
         require!(
@@ -1567,15 +1354,7 @@ impl ServiceRegistry {
 
         //  3. service_agent_instance
         let (service_agent_instance_pda, service_agent_instance_bump) =
-            Pubkey::find_program_address(
-                &[
-                    b"service_agent_instance_account",
-                    &service_id.to_le_bytes(),
-                    &agent_id.to_le_bytes(),
-                    &agent_instance.to_bytes(),
-                ],
-                program_id,
-            );
+            service_agent_instance_pda(service.service_id, agent_id, &agent_instance, program_id);
 
         let service_agent_instance_account_info = next_account_info(remaining_accounts)?;
         require!(
@@ -1626,14 +1405,7 @@ impl ServiceRegistry {
 
         //  4. operator_agent_instance
         let (operator_agent_instance_pda, operator_agent_instance_bump) =
-            Pubkey::find_program_address(
-                &[
-                    b"operator_agent_instance",
-                    &agent_instance.to_bytes(),
-                    &operator.to_bytes(),
-                ],
-                program_id,
-            );
+            operator_agent_instance_pda(&agent_instance, &operator, program_id);
 
         let operator_agent_instance_account_info = next_account_info(remaining_accounts)?;
         require!(
@@ -1687,14 +1459,7 @@ impl ServiceRegistry {
 
         //  Push in operator_agent_instance_index
         let (operator_agent_instance_index_pda, _operator_agent_instance_index_bump) =
-            Pubkey::find_program_address(
-                &[
-                    b"operator_agent_instance_index",
-                    &service.service_id.to_le_bytes(),
-                    &operator.key().to_bytes(),
-                ],
-                program_id,
-            );
+            operator_agent_instance_index_pda(service.service_id, &operator, program_id);
 
         require!(
             operator_agent_instance_index_pda == operator_agent_instance_index.key(),
@@ -1730,14 +1495,8 @@ impl ServiceRegistry {
         operator_bond_account_info: &'info AccountInfo<'info>,
         system_program_account_info: &AccountInfo<'info>,
     ) -> Result<()> {
-        let (operator_bond_pda, operator_bond_bump) = Pubkey::find_program_address(
-            &[
-                b"operator_bond",
-                &service_id.to_le_bytes(),
-                &operator.to_bytes(),
-            ],
-            program_id,
-        );
+        let (operator_bond_pda, operator_bond_bump) =
+            operator_bond_pda(service_id, &operator.key(), program_id);
 
         require!(
             operator_bond_pda == operator_bond_account_info.key(),
