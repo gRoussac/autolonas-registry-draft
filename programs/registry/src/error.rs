@@ -86,4 +86,7 @@ pub enum ErrorCode {
 
     #[msg("Insufficient funds")]
     InsufficientFunds,
+
+    #[msg("Only own service multisig")]
+    OnlyOwnServiceMultisig,
 }

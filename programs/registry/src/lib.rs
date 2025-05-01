@@ -167,7 +167,7 @@ pub mod registry {
         error::ErrorCode,
         events::{
             ActivateRegistrationEvent, CreateServiceEvent, DrainEvent, DrainerUpdatedEvent,
-            OperatorUnbonded, Refunded, RegisterAgentIdsEvent, ServiceTerminated,
+            OperatorSlashed, OperatorUnbonded, Refunded, RegisterAgentIdsEvent, ServiceTerminated,
             UpdateServiceEvent,
         },
     };
@@ -577,6 +577,99 @@ pub mod registry {
         Ok(amount)
     }
 
+    pub fn slash<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Slash<'info>>,
+        service_id: u128,
+        agent_instances: Vec<Pubkey>,
+        amounts: Vec<u64>,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+        let service = &ctx.accounts.service;
+
+        require_eq!(service.service_id, service_id);
+        require!(
+            service.state == ServiceState::Deployed,
+            ErrorCode::WrongServiceState
+        );
+        require!(
+            agent_instances.len() == amounts.len(),
+            ErrorCode::WrongArrayLength
+        );
+        require_keys_eq!(
+            ctx.accounts.user.key(),
+            service.multisig,
+            ErrorCode::OnlyOwnServiceMultisig
+        );
+
+        let mut remaining_accounts = ctx.remaining_accounts.iter();
+
+        for (i, agent_instance) in agent_instances.iter().enumerate() {
+            let amount_to_slash = amounts[i];
+
+            // Get the OperatorAgentInstanceAccount
+            let operator_agent_instance_info = next_account_info(&mut remaining_accounts)?;
+
+            let operator_account: Account<OperatorAgentInstanceAccount> =
+                Account::try_from(operator_agent_instance_info)?;
+            let operator = operator_account.operator;
+
+            let (operator_agent_instance_pda, _operator_agent_instance_bump) =
+                Pubkey::find_program_address(
+                    &[
+                        b"operator_agent_instance",
+                        &agent_instance.to_bytes(),
+                        &operator.to_bytes(),
+                    ],
+                    ctx.program_id,
+                );
+
+            require!(
+                operator_agent_instance_pda == operator_agent_instance_info.key(),
+                ErrorCode::InvalidPda
+            );
+
+            // Get the operator bond
+            let operator_bond_info = next_account_info(&mut remaining_accounts)?;
+            let mut operator_bond_account: Account<OperatorBondAccount> =
+                Account::try_from(operator_bond_info)?;
+
+            let (operator_bond_pda, _operator_bond_bump) = Pubkey::find_program_address(
+                &[
+                    b"operator_bond",
+                    &service_id.to_le_bytes(),
+                    &operator.to_bytes(),
+                ],
+                ctx.program_id,
+            );
+
+            require!(
+                operator_bond_pda == operator_bond_info.key(),
+                ErrorCode::InvalidPda
+            );
+
+            require!(
+                operator_bond_account.operator == operator,
+                ErrorCode::WrongOperator
+            );
+
+            let current_bond = operator_bond_account.bond;
+
+            // Slash logic
+            let slashed_amount = std::cmp::min(current_bond, amount_to_slash);
+
+            operator_bond_account.bond -= slashed_amount;
+            registry.slashed_funds += slashed_amount;
+
+            emit!(OperatorSlashed {
+                service_id,
+                operator,
+                amount: slashed_amount,
+            });
+        }
+
+        Ok(())
+    }
+
     pub fn check_service(ctx: Context<CheckService>, service_id: u128) -> Result<()> {
         let service_account = &ctx.accounts.service;
         // Find the Service Account PDA
@@ -612,8 +705,8 @@ pub mod registry {
 
     pub fn activate_registration(
         ctx: Context<ActivateRegistration>,
-        service_owner: Pubkey,
         service_id: u128,
+        service_owner: Pubkey,
     ) -> Result<()> {
         let registry = &ctx.accounts.registry;
         let service = &mut ctx.accounts.service;
@@ -627,6 +720,8 @@ pub mod registry {
         if service_owner == Pubkey::default() {
             return Err(ProgramError::InvalidArgument.into());
         }
+
+        require_eq!(service.service_id, service_id);
 
         require!(
             service.state == ServiceState::PreRegistration,
@@ -1812,7 +1907,7 @@ pub struct ActivateRegistration<'info> {
     pub service: Account<'info, ServiceAccount>,
 
     /// CHECK: PDA wallet owned by the program
-    #[account(mut)]
+    #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
     #[account(mut)]
@@ -1830,7 +1925,7 @@ pub struct RegisterAgentInstances<'info> {
     pub service: Account<'info, ServiceAccount>,
 
     /// CHECK: PDA wallet owned by the program
-    #[account(mut)]
+    #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
     #[account(
@@ -1862,7 +1957,7 @@ pub struct TerminateService<'info> {
     pub service_agent_ids_index: Account<'info, ServiceAgentIdsIndex>,
 
     /// CHECK: PDA wallet owned by the program
-    #[account(mut)]
+    #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
     #[account(mut)]
@@ -1893,7 +1988,7 @@ pub struct UnbondOperator<'info> {
     pub operator: Signer<'info>,
 
     /// CHECK: PDA wallet owned by the program
-    #[account(mut)]
+    #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
     #[account(mut)]
@@ -1911,10 +2006,26 @@ pub struct Drain<'info> {
     pub drainer: Signer<'info>,
 
     /// CHECK: PDA wallet owned by the program
-    #[account(mut)]
+    #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Slash<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, ServiceRegistry>,
+
+    /// CHECK: The wallet where slashed funds are accumulated.
+    #[account(mut, address = registry.wallet_key)]
+    pub registry_wallet: AccountInfo<'info>,
+
+    #[account()]
+    pub service: Account<'info, ServiceAccount>,
+
+    /// CHECK: Must be equal to service.multisig
+    pub user: Signer<'info>,
 }
 
 #[derive(Accounts)]

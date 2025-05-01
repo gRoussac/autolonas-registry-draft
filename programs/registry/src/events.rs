@@ -67,3 +67,10 @@ pub struct DrainEvent {
     pub drainer: Pubkey,
     pub amount: u64,
 }
+
+#[event]
+pub struct OperatorSlashed {
+    pub service_id: u128,
+    pub operator: Pubkey,
+    pub amount: u64,
+}

@@ -1714,7 +1714,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .activateRegistration(ownerService.publicKey, serviceId)
+          .activateRegistration(serviceId, ownerService.publicKey)
           .accounts({
             registry: registryAccount.publicKey,
             service: servicePda,
@@ -2185,7 +2185,7 @@ describe('registry', () => {
 
     try {
       await program.methods
-        .activateRegistration(ownerService.publicKey, serviceId)
+        .activateRegistration(serviceId, ownerService.publicKey)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
