@@ -89,4 +89,10 @@ pub enum ErrorCode {
 
     #[msg("Only own service multisig")]
     OnlyOwnServiceMultisig,
+
+    #[msg("Invalid slash amount")]
+    InvalidSlashAmount,
+
+    #[msg("Account not writable")]
+    AccountNotWritable,
 }

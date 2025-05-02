@@ -66,6 +66,7 @@ pub mod registry {
         config_hash: [u8; 32],
         service_owner: Pubkey,
         threshold: Option<u32>,
+        multisig: Pubkey,
     ) -> Result<()> {
         let registry = &mut ctx.accounts.registry;
 
@@ -90,13 +91,18 @@ pub mod registry {
             return Err(ErrorCode::ZeroConfigHash.into());
         }
 
+        // Check for the non-empty service multisig
+        if multisig == Pubkey::default() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
         let service_id = registry.total_supply + 1;
 
         let service = &mut ctx.accounts.service;
         service.service_id = service_id;
         service.service_owner = service_owner;
         service.security_deposit = 0;
-        // service.multisig = multisig;
+        service.multisig = multisig;
         service.config_hash = config_hash;
         service.max_num_agent_instances = 0;
         service.num_agent_instances = 0;
@@ -394,26 +400,23 @@ pub mod registry {
                 ErrorCode::WrongRegistryWallet
             );
 
-            // Do the transfer
-            let transfer_instruction = system_instruction::transfer(
-                &registry_wallet_pda,
-                &ctx.accounts.drainer.key(),
-                amount,
+            let registry_wallet_info = ctx.accounts.registry_wallet.to_account_info();
+            let drainer_info = ctx.accounts.drainer.to_account_info();
+
+            require!(
+                registry_wallet_info.is_writable && drainer_info.is_writable,
+                ErrorCode::AccountNotWritable
             );
 
-            invoke_signed(
-                &transfer_instruction,
-                &[
-                    ctx.accounts.registry_wallet.to_account_info(),
-                    ctx.accounts.drainer.to_account_info(),
-                    ctx.accounts.system_program.to_account_info(),
-                ],
-                &[&[
-                    b"registry_wallet",
-                    registry.key().as_ref(),
-                    &[registry_wallet_bump],
-                ]],
-            )?;
+            let mut from_lamports = registry_wallet_info.try_borrow_mut_lamports()?;
+            let mut to_lamports = drainer_info.try_borrow_mut_lamports()?;
+
+            if **from_lamports < amount {
+                return Err(ErrorCode::InsufficientFunds.into());
+            }
+
+            **from_lamports -= &amount;
+            **to_lamports += &amount;
 
             emit!(DrainEvent {
                 drainer: ctx.accounts.drainer.key(),
@@ -436,6 +439,7 @@ pub mod registry {
         let service = &ctx.accounts.service;
 
         require_eq!(service.service_id, service_id);
+
         require!(
             service.state == ServiceState::Deployed,
             ErrorCode::WrongServiceState
@@ -463,7 +467,7 @@ pub mod registry {
             let operator = operator_account.operator;
 
             let (operator_agent_instance_pda, _operator_agent_instance_bump) =
-                operator_agent_instance_pda(agent_instance, agent_instance, &operator);
+                operator_agent_instance_pda(agent_instance, &operator, ctx.program_id);
 
             require!(
                 operator_agent_instance_pda == operator_agent_instance_info.key(),
@@ -491,9 +495,23 @@ pub mod registry {
             let current_bond = operator_bond_account.bond;
 
             // Slash logic
+
+            require!(amount_to_slash > 0, ErrorCode::InvalidSlashAmount);
+            require!(
+                operator_bond_account.bond > 0,
+                ErrorCode::IncorrectAgentBondingValue
+            );
+
             let slashed_amount = std::cmp::min(current_bond, amount_to_slash);
 
             operator_bond_account.bond -= slashed_amount;
+            let mut data = operator_bond_info.try_borrow_mut_data()?;
+            let discriminator =
+                &anchor_lang::solana_program::hash::hash("account:OperatorBondAccount".as_bytes())
+                    .to_bytes()[..8];
+            data[..8].copy_from_slice(discriminator);
+            operator_bond_account.serialize(&mut &mut data[8..])?;
+
             registry.slashed_funds += slashed_amount;
 
             emit!(OperatorSlashed {
@@ -712,40 +730,6 @@ pub mod registry {
         Ok(())
     }
 
-    pub fn dummy_include_agent_param_account(
-        _ctx: Context<DummyContextForAgentParam>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn dummy_include_agent_instances(_ctx: Context<DummyReadAgentInstances>) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn dummy_include_operator_agent_instance_account(
-        _ctx: Context<DummyOperatorAgentInstanceAccount>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn dummy_include_service_agent_instance_account(
-        _ctx: Context<DummyServiceAgentInstanceAccount>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn dummy_include_service_agent_slot_counter_account(
-        _ctx: Context<DummyServiceAgentSlotCounterAccount>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn dummy_include_operator_bond_account(
-        _ctx: Context<DummyOperatorBondAccount>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     pub fn terminate<'info>(
         ctx: Context<'_, '_, 'info, 'info, TerminateService<'info>>,
         service_id: u128,
@@ -946,8 +930,6 @@ pub mod registry {
 
         let refund: u64 = operator_bond.bond;
 
-        msg!(&refund.to_string());
-
         let (registry_wallet_pda, registry_wallet_bump) =
             registry_wallet_pda(&registry.key(), ctx.program_id);
 
@@ -980,7 +962,7 @@ pub mod registry {
             **operator.to_account_info().try_borrow_mut_lamports()? += refund;
             **ctx.accounts.registry_wallet.try_borrow_mut_lamports()? -= refund;
 
-            msg!("Refunded {} lamports to operator", refund);
+            // msg!("Refunded {} lamports to operator", refund);
         }
 
         ServiceRegistry::close_account(&operator_bond.to_account_info(), &ctx.accounts.user)?;
@@ -1022,6 +1004,40 @@ pub mod registry {
         });
 
         registry.locked = false;
+        Ok(())
+    }
+
+    pub fn dummy_include_agent_param_account(
+        _ctx: Context<DummyContextForAgentParam>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn dummy_include_agent_instances(_ctx: Context<DummyReadAgentInstances>) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn dummy_include_operator_agent_instance_account(
+        _ctx: Context<DummyOperatorAgentInstanceAccount>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn dummy_include_service_agent_instance_account(
+        _ctx: Context<DummyServiceAgentInstanceAccount>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn dummy_include_service_agent_slot_counter_account(
+        _ctx: Context<DummyServiceAgentSlotCounterAccount>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn dummy_include_operator_bond_account(
+        _ctx: Context<DummyOperatorBondAccount>,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -1776,14 +1792,14 @@ pub struct Slash<'info> {
     #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
 
+    #[account(mut)]
+    pub service: Account<'info, ServiceAccount>,
+
     /// CHECK: The wallet where slashed funds are accumulated.
     #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
-    #[account()]
-    pub service: Account<'info, ServiceAccount>,
-
-    /// CHECK: Must be equal to service.multisig
+    #[account(mut, address = service.multisig)]
     pub user: Signer<'info>,
 }
 
