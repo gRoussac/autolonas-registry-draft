@@ -41,24 +41,20 @@ pub fn service_agent_slot_counter_pda(
     )
 }
 
-pub fn agent_instances_index_pda(
-    service_id: u128,
-    agent_id: u32,
-    program_id: &Pubkey,
-) -> (Pubkey, u8) {
+pub fn agent_instances_index_pda(service_id: u128, program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[
-            b"agent_instances_index",
-            &service_id.to_le_bytes(),
-            &agent_id.to_le_bytes(),
-        ],
+        &[b"agent_instances_index", &service_id.to_le_bytes()],
         program_id,
     )
 }
 
-pub fn operator_as_agent_index_pda(operator: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
+pub fn operator_as_agent_pda(operator: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[b"agent_instances_index", &operator.to_bytes()],
+        &[
+            b"operator_agent_instance",
+            &operator.to_bytes(), // this is on purpose doubled operator
+            &operator.to_bytes(), // this is on purpose doubled operator
+        ],
         program_id,
     )
 }

@@ -74,3 +74,9 @@ pub struct OperatorSlashed {
     pub operator: Pubkey,
     pub amount: u64,
 }
+
+#[event]
+pub struct DeployServiceEvent {
+    pub service_id: u128,
+    pub multisig: Pubkey,
+}

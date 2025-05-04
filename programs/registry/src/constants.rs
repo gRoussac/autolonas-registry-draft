@@ -1,5 +1,6 @@
 pub const MAX_AGENT_IDS_PER_SERVICE: usize = 128;
 pub const MAX_AGENT_INSTANCES_PER_SERVICE: usize = 192;
+pub const MAX_MULTISIGS: usize = 300;
 
 pub const STRING_PREFIX_SIZE: usize = 4;
 pub const MAX_NAME_LENGTH: usize = 256;

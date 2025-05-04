@@ -95,4 +95,13 @@ pub enum ErrorCode {
 
     #[msg("Account not writable")]
     AccountNotWritable,
+
+    #[msg("Unauthorized multisig")]
+    UnauthorizedMultisig,
+
+    #[msg("Max multisig in registry reached")]
+    MaxMultiSigsReached,
+
+    #[msg("Missing multisig account")]
+    MissingMultisigAccount,
 }

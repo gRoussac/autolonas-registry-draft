@@ -2,6 +2,7 @@
 use anchor_lang::{
     prelude::*,
     solana_program::{
+        hash::hash,
         program::invoke_signed,
         system_instruction::{self, transfer},
     },
@@ -66,7 +67,6 @@ pub mod registry {
         config_hash: [u8; 32],
         service_owner: Pubkey,
         threshold: Option<u32>,
-        multisig: Pubkey,
     ) -> Result<()> {
         let registry = &mut ctx.accounts.registry;
 
@@ -91,18 +91,12 @@ pub mod registry {
             return Err(ErrorCode::ZeroConfigHash.into());
         }
 
-        // Check for the non-empty service multisig
-        if multisig == Pubkey::default() {
-            return Err(ProgramError::InvalidArgument.into());
-        }
-
         let service_id = registry.total_supply + 1;
 
         let service = &mut ctx.accounts.service;
         service.service_id = service_id;
         service.service_owner = service_owner;
         service.security_deposit = 0;
-        service.multisig = multisig;
         service.config_hash = config_hash;
         service.max_num_agent_instances = 0;
         service.num_agent_instances = 0;
@@ -338,6 +332,77 @@ pub mod registry {
         let agent_params = vec![AgentParams { slots, bond }];
 
         register_agent_ids_to_service(ctx, service_owner, agent_ids, agent_params, threshold)
+    }
+
+    pub fn deploy<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Deploy<'info>>,
+        service_id: u128,
+        multisig_implementation: Pubkey,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+
+        // Reentrancy guard (same concept as Solidity, using a lock mechanism)
+        if registry.locked {
+            return Err(ErrorCode::ReentrancyGuard.into());
+        }
+        registry.locked = true;
+
+        let service = &mut ctx.accounts.service;
+        let service_owner = &ctx.accounts.service_owner;
+
+        let registry_multisig = &ctx.accounts.registry_multisig;
+
+        // Check for the manager privilege for a service management
+        if ctx.accounts.user.key() != registry.manager {
+            return Err(ProgramError::InvalidAccountOwner.into());
+        }
+
+        // Validate that the provided service owner is the actual owner of the service
+        if service.service_owner != service_owner.key() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        require_eq!(service.service_id, service_id);
+
+        // Check for whitelisted multisig implementation
+        require!(
+            registry_multisig.is_authorized(&multisig_implementation),
+            ErrorCode::UnauthorizedMultisig
+        );
+
+        // Retrieve agent instances
+        let agent_instances: Vec<Pubkey> = ctx
+            .remaining_accounts
+            .iter()
+            .skip(1)
+            .map(|acc| acc.key())
+            .collect();
+
+        let remaining_accounts = ctx.remaining_accounts;
+
+        let multisig_pda = ServiceRegistry::create_multisig(
+            &multisig_implementation, // call this implemenation later instead of create_multisig
+            &agent_instances,
+            service.threshold,
+            &data,
+            &ctx.accounts.user,
+            ctx.program_id,
+            remaining_accounts,
+        )?;
+
+        // Update service state
+        service.multisig = multisig_pda;
+        service.state = ServiceState::Deployed;
+
+        emit!(DeployServiceEvent {
+            service_id,
+            multisig: multisig_pda,
+        });
+
+        registry.locked = false;
+
+        Ok(())
     }
 
     pub fn change_drainer(ctx: Context<ChangeDrainer>, new_drainer: Pubkey) -> Result<()> {
@@ -687,6 +752,7 @@ pub mod registry {
 
         let program_id = ctx.program_id;
         let user_account_info = ctx.accounts.user.to_account_info();
+        let agent_instances_account_info = next_account_info(&mut remaining_accounts)?;
         let system_program_account_info = ctx.accounts.system_program.to_account_info();
         let operator_agent_instance_index = &mut ctx.accounts.operator_agent_instance_index;
 
@@ -702,6 +768,7 @@ pub mod registry {
                 agent_param,
                 operator,
                 &user_account_info,
+                agent_instances_account_info,
                 &system_program_account_info,
                 operator_agent_instance_index,
                 &mut remaining_accounts,
@@ -755,7 +822,7 @@ pub mod registry {
             return Err(ProgramError::InvalidArgument.into());
         }
 
-        require!(service_id == service.service_id, ErrorCode::InvalidPda);
+        require_eq!(service_id, service.service_id);
 
         // Check if already terminated
         require!(
@@ -773,9 +840,18 @@ pub mod registry {
 
         let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
+        let (agent_instances_pda, _) =
+            agent_instances_index_pda(service.service_id, ctx.program_id);
+
+        let agent_instances_info = next_account_info(&mut remaining_accounts_iter)?;
+        require!(
+            agent_instances_info.key() == agent_instances_pda,
+            ErrorCode::InvalidPda
+        );
+
         // Cleanup all agent instance PDAs
         for param in &service_agent_ids_index.agent_ids {
-            // 1. Close the slot_counter PDA
+            // Close the slot_counter PDA
             let (slot_counter_pda, _) =
                 service_agent_slot_counter_pda(service.service_id, param.agent_id, ctx.program_id);
 
@@ -786,17 +862,7 @@ pub mod registry {
             );
             ServiceRegistry::close_account(slot_counter_info, &ctx.accounts.user)?;
 
-            // 2. Close the agent_instances PDA
-            let (agent_instances_pda, _) =
-                agent_instances_index_pda(service.service_id, param.agent_id, ctx.program_id);
-
-            let agent_instances_info = next_account_info(&mut remaining_accounts_iter)?;
-            require!(
-                agent_instances_info.key() == agent_instances_pda,
-                ErrorCode::InvalidPda
-            );
-
-            // 3. Now close all service_agent_instance PDAs for each agent_instance
+            // Now close all service_agent_instance PDAs for each agent_instance
             let agent_instances_account_index: Account<ServiceAgentInstancesIndex> =
                 Account::try_from(agent_instances_info)?;
 
@@ -815,9 +881,10 @@ pub mod registry {
                 );
                 ServiceRegistry::close_account(service_agent_instance_info, &ctx.accounts.user)?;
             }
-
-            ServiceRegistry::close_account(agent_instances_info, &ctx.accounts.user)?;
         }
+
+        // Close the agent_instances PDA
+        ServiceRegistry::close_account(agent_instances_info, &ctx.accounts.user)?;
 
         // Refund security deposit
         let refund = service.security_deposit;
@@ -887,7 +954,7 @@ pub mod registry {
 
         registry.locked = true;
 
-        require!(service_id == service.service_id, ErrorCode::InvalidPda);
+        require_eq!(service_id, service.service_id);
 
         // Check for the manager privilege for a service management
         if ctx.accounts.user.key() != registry.manager {
@@ -1004,6 +1071,40 @@ pub mod registry {
         });
 
         registry.locked = false;
+        Ok(())
+    }
+
+    pub fn change_multisig_permission(
+        ctx: Context<ChangeMultisigPermission>,
+        multisig: Pubkey,
+        permission: bool,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+
+        if ctx.accounts.user.key() != registry.owner {
+            return Err(ProgramError::IllegalOwner.into());
+        }
+
+        if multisig == Pubkey::default() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        let registry_multisig = &mut ctx.accounts.registry_multisig;
+
+        if permission && registry_multisig.authorized_multisigs.len() >= MAX_MULTISIGS {
+            return Err(ErrorCode::MaxMultiSigsReached.into());
+        }
+
+        if permission {
+            if !registry_multisig.authorized_multisigs.contains(&multisig) {
+                registry_multisig.authorized_multisigs.push(multisig);
+            }
+        } else {
+            registry_multisig
+                .authorized_multisigs
+                .retain(|x| x != &multisig);
+        }
+
         Ok(())
     }
 
@@ -1224,7 +1325,7 @@ impl ServiceRegistry {
             return Err(ProgramError::InvalidArgument.into());
         }
 
-        let (operator_as_agent_pda, _) = operator_as_agent_index_pda(&operator, &program_id);
+        let (operator_as_agent_pda, _) = operator_as_agent_pda(&operator, &program_id);
 
         let operator_check_account_info = next_account_info(remaining_accounts)?;
 
@@ -1250,6 +1351,7 @@ impl ServiceRegistry {
         agent_param: &AgentParamAccount,
         operator: Pubkey,
         user_account_info: &AccountInfo<'info>,
+        agent_instances_account_info_index: &'info AccountInfo<'info>,
         system_program_account_info: &AccountInfo<'info>,
         operator_agent_instance_index: &mut Account<'info, OperatorAgentInstanceIndex>,
         remaining_accounts: &mut std::slice::Iter<'info, AccountInfo<'info>>,
@@ -1258,19 +1360,16 @@ impl ServiceRegistry {
 
         // 1. Global agent_instances
         let (agent_instances_pda, agent_instances_bump) =
-            agent_instances_index_pda(service.service_id, agent_id, program_id);
-
-        let agent_instances_account_info = next_account_info(remaining_accounts)?;
-
+            agent_instances_index_pda(service.service_id, program_id);
         require!(
-            agent_instances_pda == agent_instances_account_info.key(),
+            agent_instances_pda == agent_instances_account_info_index.key(),
             ErrorCode::InvalidPda
         );
 
         // Check if the account exists
         let mut agent_instances_index: Account<ServiceAgentInstancesIndex>;
 
-        if agent_instances_account_info.data_is_empty() {
+        if agent_instances_account_info_index.data_is_empty() {
             // Create the account if it doesn't exist
             invoke_signed(
                 &system_instruction::create_account(
@@ -1282,23 +1381,24 @@ impl ServiceRegistry {
                 ),
                 &[
                     user_account_info.clone(),
-                    agent_instances_account_info.clone(),
+                    agent_instances_account_info_index.clone(),
                     system_program_account_info.clone(),
                 ],
                 &[&[
                     b"agent_instances_index",
                     &service_id.to_le_bytes(),
-                    &agent_id.to_le_bytes(),
                     &[agent_instances_bump],
                 ]],
             )?;
 
             // Initialize new empty account
-            agent_instances_index = Account::try_from_unchecked(agent_instances_account_info)?;
+            agent_instances_index =
+                Account::try_from_unchecked(agent_instances_account_info_index)?;
             agent_instances_index.service_agent_instances = Vec::new();
         } else {
             // Load existing account
-            agent_instances_index = Account::try_from_unchecked(agent_instances_account_info)?;
+            agent_instances_index =
+                Account::try_from_unchecked(agent_instances_account_info_index)?;
         }
 
         // Add the new agent instance
@@ -1306,7 +1406,7 @@ impl ServiceRegistry {
             .service_agent_instances
             .push(agent_instance);
 
-        let mut data = agent_instances_account_info.try_borrow_mut_data()?;
+        let mut data = agent_instances_account_info_index.try_borrow_mut_data()?;
         let discriminator = &anchor_lang::solana_program::hash::hash(
             "account:ServiceAgentInstancesIndex".as_bytes(),
         )
@@ -1576,12 +1676,86 @@ impl ServiceRegistry {
         account.data.borrow_mut().fill(0);
         Ok(())
     }
+
+    pub fn create_multisig<'info>(
+        _multisig_implementation: &Pubkey,
+        agent_instances: &[Pubkey],
+        threshold: u32,
+        data: &[u8],
+        payer: &Signer<'info>,
+        program_id: &Pubkey,
+        remaining_accounts: &[AccountInfo<'info>],
+    ) -> Result<Pubkey> {
+        // TODO! here we normally call multisig_implementation but we mimic a IMultisig(multisigImplementation).create
+        require!(
+            threshold > 0 && threshold as usize <= agent_instances.len(),
+            ErrorCode::WrongThreshold
+        );
+
+        // Prepare seed data based on agent instances
+        let mut seed_data = vec![];
+        for agent in agent_instances {
+            seed_data.extend_from_slice(agent.as_ref());
+        }
+
+        let hash = hash(&seed_data);
+        msg!(&hex::encode(hash));
+        let seeds: &[&[u8]] = &[b"multisig", hash.as_ref()];
+
+        //  assert_eq!(1, 2);
+
+        // Generate the PDA for the multisig account
+        let (multisig_pda, bump) = Pubkey::find_program_address(seeds, program_id); // multisig_implementation
+
+        // Ensure that the multisig_pda is included in the accounts list
+        let multisig_account_info = &remaining_accounts[0];
+
+        msg!("multisig_pda {:?}", multisig_account_info.key());
+        msg!("multisig_pda {:?}", multisig_pda);
+
+        require_eq!(multisig_account_info.key(), multisig_pda);
+
+        // Determine space and lamports for account creation
+        let space = MultisigAccount::size(agent_instances.len(), data.len());
+        let lamports = Rent::get()?.minimum_balance(space);
+
+        // Create the instruction for account creation
+        let ix = system_instruction::create_account(
+            &payer.key(),
+            &multisig_pda,
+            lamports,
+            space as u64,
+            program_id, // multisig_implementation
+        );
+
+        // Use invoke_signed with the collected account info
+        let signer_seeds: &[&[u8]] = &[b"multisig", hash.as_ref(), &[bump]];
+
+        anchor_lang::solana_program::program::invoke_signed(
+            &ix,
+            &[payer.to_account_info(), multisig_account_info.clone()],
+            &[signer_seeds],
+        )?;
+
+        let multisig_account_data = MultisigAccount {
+            agent_instances: agent_instances.to_vec(),
+            threshold,
+            data: data.to_vec(),
+        };
+
+        multisig_account_info.try_borrow_mut_data()?;
+        multisig_account_data.serialize(&mut *multisig_account_info.data.borrow_mut())?;
+
+        // Return the multisig PDA (which is the address of the newly created account)
+        Ok(multisig_pda)
+    }
 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(init, payer = user, space = REGISTRY_ACCOUNT_SIZE)]
     pub registry: Account<'info, ServiceRegistry>,
+
     /// CHECK: PDA wallet owned by the program
     #[account(
             init,
@@ -1591,8 +1765,10 @@ pub struct Initialize<'info> {
             bump
         )]
     pub registry_wallet: AccountInfo<'info>,
+
     #[account(mut)]
     pub user: Signer<'info>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -1611,7 +1787,7 @@ pub struct CreateService<'info> {
     )]
     pub service: Account<'info, ServiceAccount>,
 
-    #[account(mut)]
+    #[account(mut, address = registry.manager)]
     pub user: Signer<'info>,
 
     pub system_program: Program<'info, System>,
@@ -1625,7 +1801,7 @@ pub struct UpdateService<'info> {
     #[account(mut)]
     pub service: Account<'info, ServiceAccount>,
 
-    #[account(mut, address = registry.manager)]
+    #[account(address = registry.manager)]
     pub user: Signer<'info>,
 
     pub system_program: Program<'info, System>,
@@ -1658,7 +1834,7 @@ pub struct RegisterAgentIdsToService<'info> {
 pub struct ChangeDrainer<'info> {
     #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
-    #[account(mut, address = registry.owner)]
+    #[account(address = registry.owner)]
     pub user: Signer<'info>,
 }
 
@@ -1667,15 +1843,12 @@ pub struct CheckService<'info> {
     #[account(mut)]
     pub service: Account<'info, ServiceAccount>,
 
-    #[account(
-        seeds = [b"service_agent_ids_index", &service.service_id.to_le_bytes()[..]],
-        bump,
-    )]
     pub service_agent_ids_index: Account<'info, ServiceAgentIdsIndex>,
 }
 
 #[derive(Accounts)]
 pub struct ActivateRegistration<'info> {
+    #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
 
     #[account(mut)]
@@ -1685,7 +1858,7 @@ pub struct ActivateRegistration<'info> {
     #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
-    #[account(mut)]
+    #[account(mut, address = registry.manager)]
     pub user: Signer<'info>,
 
     pub system_program: Program<'info, System>,
@@ -1694,6 +1867,7 @@ pub struct ActivateRegistration<'info> {
 #[derive(Accounts)]
 #[instruction(operator: Pubkey)]
 pub struct RegisterAgentInstances<'info> {
+    #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
 
     #[account(mut)]
@@ -1712,7 +1886,7 @@ pub struct RegisterAgentInstances<'info> {
     )]
     pub operator_agent_instance_index: Account<'info, OperatorAgentInstanceIndex>,
 
-    #[account(mut)]
+    #[account(mut, address = registry.manager)]
     pub user: Signer<'info>,
 
     pub system_program: Program<'info, System>,
@@ -1720,25 +1894,24 @@ pub struct RegisterAgentInstances<'info> {
 
 #[derive(Accounts)]
 pub struct TerminateService<'info> {
+    #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
+
     #[account(mut)]
     pub service: Account<'info, ServiceAccount>,
 
-    #[account(
-        mut,
-        seeds = [b"service_agent_ids_index", &service.service_id.to_le_bytes()[..]],
-        bump,
-    )]
+    #[account(mut)]
     pub service_agent_ids_index: Account<'info, ServiceAgentIdsIndex>,
 
     /// CHECK: PDA wallet owned by the program
     #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
-    #[account(mut)]
-    pub service_owner: Signer<'info>,
+    /// CHECK: service_owner
+    #[account(mut, address = service.service_owner)]
+    pub service_owner: AccountInfo<'info>,
 
-    #[account(mut, signer)]
+    #[account(mut, address = registry.manager)]
     pub user: Signer<'info>,
 }
 
@@ -1749,24 +1922,21 @@ pub struct UnbondOperator<'info> {
     #[account(mut)]
     pub service: Account<'info, ServiceAccount>,
 
-    #[account(
-        mut,
-        seeds = [b"operator_agent_instance_index", &service.service_id.to_le_bytes()[..], &operator.key().to_bytes()[..]],
-        bump,
-    )]
+    #[account(mut)]
     pub operator_agent_instance_index: Account<'info, OperatorAgentInstanceIndex>,
 
     #[account(mut)]
     pub operator_bond: Account<'info, OperatorBondAccount>,
 
+    /// CHECK: operator
     #[account(mut)]
-    pub operator: Signer<'info>,
+    pub operator: AccountInfo<'info>,
 
     /// CHECK: PDA wallet owned by the program
     #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
-    #[account(mut)]
+    #[account(mut, address = registry.manager)]
     pub user: Signer<'info>,
 
     pub system_program: Program<'info, System>,
@@ -1799,8 +1969,48 @@ pub struct Slash<'info> {
     #[account(mut, address = registry.wallet_key)]
     pub registry_wallet: AccountInfo<'info>,
 
-    #[account(mut, address = service.multisig)]
+    #[account(address = service.multisig)]
     pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Deploy<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, ServiceRegistry>,
+
+    #[account(mut)]
+    pub service: Account<'info, ServiceAccount>,
+
+    /// CHECK: service_owner
+    #[account(address = service.service_owner)]
+    pub service_owner: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub registry_multisig: Account<'info, RegistryMultisig>,
+
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ChangeMultisigPermission<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, ServiceRegistry>,
+
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = 8 + (MAX_MULTISIGS * PUBKEY_SIZE) + 8, // 8 bytes for Vec metadata + data for MAX_MULTISIGS * PUBKEY_SIZE  + 8 bytes Vec overhead
+        seeds = [b"registry_multisig", registry.key().as_ref()],
+        bump
+    )]
+    pub registry_multisig: Account<'info, RegistryMultisig>,
+
+    #[account(mut, address = registry.owner)]
+    pub user: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

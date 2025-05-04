@@ -5,16 +5,17 @@
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.31.0"
+    "@coral-xyz/anchor": "^0.31.0",
+    "@noble/hashes": "^1.8.0"
   },
   "devDependencies": {
-    "chai": "^5.2.0",
-    "mocha": "^11.2.2",
-    "ts-mocha": "^11.1.0",
     "@types/bn.js": "^5.1.0",
     "@types/chai": "^5.2.1",
     "@types/mocha": "^10.0.10",
-    "typescript": "^5.7.3",
-    "prettier": "^3.5.3"
+    "chai": "^5.2.0",
+    "mocha": "^11.2.2",
+    "prettier": "^3.5.3",
+    "ts-mocha": "^11.1.0",
+    "typescript": "^5.7.3"
   }
 }

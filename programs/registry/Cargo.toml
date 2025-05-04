@@ -20,4 +20,5 @@ anchor-debug = []
 
 [dependencies]
 anchor-lang = { version = "0.31.0", features = ["init-if-needed"] }
+hex = "*"
 # anchor-spl = { version = "0.31.0", features = ["idl-build"] }

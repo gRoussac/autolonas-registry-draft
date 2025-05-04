@@ -69,14 +69,14 @@ pub struct ServiceAgentSlotCounterAccount {
     pub count: u8,
 }
 
-/// PDA seeds: ["agent_instances_index", service_id, agent_id]
+/// PDA seeds: ["agent_instances_index", service_id]
 #[account]
 pub struct ServiceAgentInstancesIndex {
     pub service_agent_instances: Vec<Pubkey>,
 }
 
 impl ServiceAgentInstancesIndex {
-    pub const LEN: usize = 8 + U128_SIZE + 4 + 8 + (MAX_AGENT_INSTANCES_PER_SERVICE * PUBKEY_SIZE);
+    pub const LEN: usize = 8 + 4 + (MAX_AGENT_INSTANCES_PER_SERVICE * PUBKEY_SIZE);
 }
 
 /// PDA seeds: ["operator_agent_instance", agent_instance, operator]
@@ -106,4 +106,31 @@ pub struct OperatorBondAccount {
 
 impl OperatorBondAccount {
     pub const LEN: usize = 8 + U128_SIZE + PUBKEY_SIZE + U64_SIZE;
+}
+
+#[account]
+pub struct RegistryMultisig {
+    pub authorized_multisigs: Vec<Pubkey>,
+}
+
+impl RegistryMultisig {
+    pub fn is_authorized(&self, multisig: &Pubkey) -> bool {
+        self.authorized_multisigs.contains(multisig)
+    }
+}
+
+#[account]
+pub struct MultisigAccount {
+    pub agent_instances: Vec<Pubkey>,
+    pub threshold: u32,
+    pub data: Vec<u8>,
+}
+
+impl MultisigAccount {
+    pub fn size(agent_count: usize, data_len: usize) -> usize {
+        8 +                     // discriminator
+        4 + agent_count * 32 +  // Vec<Pubkey>
+        4 +                     // threshold (u32)
+        4 + data_len // Vec<u8>
+    }
 }

@@ -1,7 +1,8 @@
 import * as anchor from '@coral-xyz/anchor';
-import { BN, Program } from '@coral-xyz/anchor';
+import { Program } from '@coral-xyz/anchor';
 import { Registry } from '../target/types/registry';
 import { assert, expect } from 'chai';
+import { sha256 } from '@noble/hashes/sha2';
 
 const program = anchor.workspace.registry as Program<Registry>;
 const provider = anchor.AnchorProvider.env();
@@ -17,7 +18,7 @@ describe('registry', () => {
   const manager = anchor.web3.Keypair.generate();
   const drainer = anchor.web3.Keypair.generate();
   const ownerService = anchor.web3.Keypair.generate();
-  const mutlisig = anchor.web3.Keypair.generate();
+  const multisigImplementation = anchor.web3.Keypair.generate();
 
   it('Initializes Registry', async () => {
     const registryAccount = anchor.web3.Keypair.generate();
@@ -135,12 +136,7 @@ describe('registry', () => {
 
       // Create first service
       await program.methods
-        .create(
-          Array.from(config_hash),
-          ownerService.publicKey,
-          null,
-          mutlisig.publicKey
-        )
+        .create(Array.from(config_hash), ownerService.publicKey, null)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -239,8 +235,7 @@ describe('registry', () => {
         .create(
           Array.from(second_config_hash),
           ownerService.publicKey,
-          threshold,
-          mutlisig.publicKey
+          threshold
         )
         .accounts({
           registry: registryAccount.publicKey,
@@ -277,12 +272,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .create(
-            Array.from(config_hash),
-            ownerService.publicKey,
-            null,
-            mutlisig.publicKey
-          )
+          .create(Array.from(config_hash), ownerService.publicKey, null)
           .accounts({
             registry: registryAccount.publicKey,
             service: servicePda,
@@ -452,12 +442,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .create(
-            Array.from(config_hash),
-            ownerService.publicKey,
-            null,
-            mutlisig.publicKey
-          )
+          .create(Array.from(config_hash), ownerService.publicKey, null)
           .accounts({
             registry: registryAccount.publicKey,
             service: servicePda,
@@ -624,12 +609,7 @@ describe('registry', () => {
 
       try {
         await program.methods
-          .create(
-            Array.from(config_hash),
-            ownerService.publicKey,
-            null,
-            mutlisig.publicKey
-          )
+          .create(Array.from(config_hash), ownerService.publicKey, null)
           .accounts({
             registry: registryAccount.publicKey,
             service: servicePda,
@@ -789,12 +769,7 @@ describe('registry', () => {
       );
 
       await program.methods
-        .create(
-          Array.from(config_hash),
-          ownerService.publicKey,
-          null,
-          mutlisig.publicKey
-        )
+        .create(Array.from(config_hash), ownerService.publicKey, null)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -919,12 +894,7 @@ describe('registry', () => {
       // Create service
       try {
         await program.methods
-          .create(
-            Array.from(config_hash),
-            ownerService.publicKey,
-            null,
-            mutlisig.publicKey
-          )
+          .create(Array.from(config_hash), ownerService.publicKey, null)
           .accounts({
             registry: registryAccount.publicKey,
             service: servicePda,
@@ -1068,12 +1038,7 @@ describe('registry', () => {
 
       // Create the first service
       await program.methods
-        .create(
-          Array.from(config_hash),
-          ownerService.publicKey,
-          null,
-          mutlisig.publicKey
-        )
+        .create(Array.from(config_hash), ownerService.publicKey, null)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -1226,12 +1191,7 @@ describe('registry', () => {
 
       // Create first service
       await program.methods
-        .create(
-          Array.from(config_hash),
-          ownerService.publicKey,
-          null,
-          mutlisig.publicKey
-        )
+        .create(Array.from(config_hash), ownerService.publicKey, null)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -1366,12 +1326,7 @@ describe('registry', () => {
 
       // Create first service
       await program.methods
-        .create(
-          Array.from(config_hash),
-          ownerService.publicKey,
-          null,
-          mutlisig.publicKey
-        )
+        .create(Array.from(config_hash), ownerService.publicKey, null)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -1517,12 +1472,7 @@ describe('registry', () => {
 
       // Create first service
       await program.methods
-        .create(
-          Array.from(config_hash),
-          ownerService.publicKey,
-          null,
-          mutlisig.publicKey
-        )
+        .create(Array.from(config_hash), ownerService.publicKey, null)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -1682,12 +1632,7 @@ describe('registry', () => {
 
       // Create first service
       await program.methods
-        .create(
-          Array.from(config_hash),
-          ownerService.publicKey,
-          null,
-          mutlisig.publicKey
-        )
+        .create(Array.from(config_hash), ownerService.publicKey, null)
         .accounts({
           registry: registryAccount.publicKey,
           service: servicePda,
@@ -1855,6 +1800,70 @@ describe('registry', () => {
       expect(operatorBond.bond.toNumber()).to.equal(instancesBond.toNumber());
     });
 
+    it('Deploys a service', async function () {
+      const agent_ids_per_service = 1;
+      const threshold = 1;
+      const agentsToRegister = 1;
+      const config_hash = new Uint8Array(32).fill(19);
+
+      // Register agents and get setup info
+      const {
+        serviceId,
+        servicePda,
+        agentInstances,
+        operator,
+        instancesBond,
+        programWalletPda,
+        operatorBondPda,
+      } = await registerMultipleAgentInstances(
+        registryAccount,
+        config_hash,
+        agent_ids_per_service,
+        threshold,
+        agentsToRegister
+      );
+
+      const [registryMultisigPda] =
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('registry_multisig'),
+            registryAccount.publicKey.toBuffer(),
+          ],
+          program.programId
+        );
+
+      // Whitelist the multisig implementation
+      await program.methods
+        .changeMultisigPermission(multisigImplementation.publicKey, true)
+        .accounts({
+          registry: registryAccount.publicKey,
+          registryMultisig: registryMultisigPda,
+          user: ownerRegistry.publicKey,
+        })
+        .signers([ownerRegistry])
+        .rpc();
+
+      // Call the deployService function
+      const multisigPda = await deployService({
+        program,
+        registryAccount,
+        serviceId,
+        servicePda,
+        multisigImplementation,
+        ownerRegistry,
+        ownerService,
+        manager,
+        agentInstances,
+      });
+
+      // Verify service has been updated
+      const updatedService =
+        await program.account.serviceAccount.fetch(servicePda);
+      //console.debug('Service multisig:', updatedService.multisig.toBase58());
+      assert.ok(updatedService.state.deployed);
+      assert.equal(updatedService.multisig.toBase58(), multisigPda.toBase58());
+    });
+
     it('Terminates a service', async () => {
       const agent_ids_per_service = 1;
       const threshold = 1;
@@ -2010,7 +2019,7 @@ describe('registry', () => {
           registryWallet: programWalletPda,
         })
         .remainingAccounts(remainingAccounts)
-        .signers([manager, operator])
+        .signers([manager])
         .rpc();
 
       // Operator bond must be wiped
@@ -2042,29 +2051,19 @@ describe('registry', () => {
 
   describe('Registry Drainer Tests', () => {
     let registryAccount: anchor.web3.Keypair;
-    let owner: anchor.web3.Keypair;
-    let connection: anchor.web3.Connection;
 
     before(async function () {
       registryAccount = anchor.web3.Keypair.generate();
-      owner = anchor.web3.Keypair.generate();
-      connection = anchor.getProvider().connection;
 
       // Airdrop to user (the current owner)
       let airdropSignature = await connection.requestAirdrop(
-        owner.publicKey,
+        ownerRegistry.publicKey,
         2 * anchor.web3.LAMPORTS_PER_SOL
       );
       await connection.confirmTransaction(airdropSignature);
 
       airdropSignature = await connection.requestAirdrop(
         manager.publicKey,
-        20 * anchor.web3.LAMPORTS_PER_SOL
-      );
-      await connection.confirmTransaction(airdropSignature);
-
-      airdropSignature = await connection.requestAirdrop(
-        mutlisig.publicKey,
         20 * anchor.web3.LAMPORTS_PER_SOL
       );
       await connection.confirmTransaction(airdropSignature);
@@ -2080,9 +2079,9 @@ describe('registry', () => {
         )
         .accounts({
           registry: registryAccount.publicKey,
-          user: owner.publicKey,
+          user: ownerRegistry.publicKey,
         })
-        .signers([owner, registryAccount])
+        .signers([ownerRegistry, registryAccount])
         .rpc();
     });
 
@@ -2093,9 +2092,9 @@ describe('registry', () => {
           .changeDrainer(anotherDrainer)
           .accounts({
             registry: registryAccount.publicKey,
-            user: owner.publicKey,
+            user: ownerRegistry.publicKey,
           })
-          .signers([owner])
+          .signers([ownerRegistry])
           .rpc();
       } catch (error) {
         console.error('Transaction failed:', error);
@@ -2355,28 +2354,24 @@ describe('registry', () => {
   }) {
     const serviceIdBn = new anchor.BN(serviceId);
 
-    const operatorAgentInstancePdas = await Promise.all(
-      agentInstances.map((agentInstance) =>
-        anchor.web3.PublicKey.findProgramAddress(
-          [
-            Buffer.from('operator_agent_instance'),
-            agentInstance.publicKey.toBuffer(),
-            operator.publicKey.toBuffer(),
-          ],
-          program.programId
-        ).then(([pda]) => pda)
-      )
-    );
-
-    const operatorBondPda = (
-      await anchor.web3.PublicKey.findProgramAddress(
+    const operatorAgentInstancePdas = agentInstances.map((agentInstance) =>
+      anchor.web3.PublicKey.findProgramAddressSync(
         [
-          Buffer.from('operator_bond'),
-          serviceIdBn.toArrayLike(Buffer, 'le', 16),
+          Buffer.from('operator_agent_instance'),
+          agentInstance.publicKey.toBuffer(),
           operator.publicKey.toBuffer(),
         ],
         program.programId
       )
+    );
+
+    const operatorBondPda = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from('operator_bond'),
+        serviceIdBn.toArrayLike(Buffer, 'le', 16),
+        operator.publicKey.toBuffer(),
+      ],
+      program.programId
     )[0];
 
     // console.debug(amounts);
@@ -2391,7 +2386,7 @@ describe('registry', () => {
         registry: registryAccount.publicKey,
         registryWallet,
         service: servicePda,
-        user: mutlisig.publicKey,
+        user: multisigImplementation.publicKey,
       })
       .remainingAccounts(
         agentInstances.flatMap((_, i) => [
@@ -2407,7 +2402,7 @@ describe('registry', () => {
           },
         ])
       )
-      .signers([mutlisig])
+      .signers([multisigImplementation])
       .rpc();
   }
 
@@ -2424,12 +2419,7 @@ describe('registry', () => {
     );
 
     await program.methods
-      .create(
-        Array.from(config_hash),
-        ownerService.publicKey,
-        null,
-        mutlisig.publicKey
-      )
+      .create(Array.from(config_hash), ownerService.publicKey, null)
       .accounts({
         registry: registryAccount.publicKey,
         service: servicePda,
@@ -2552,26 +2542,29 @@ describe('registry', () => {
     await connection.confirmTransaction(airdropSignature);
 
     const [operatorAsAgentPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from('agent_instances_index'), operator.publicKey.toBuffer()],
+      [
+        Buffer.from('operator_agent_instance'),
+        operator.publicKey.toBuffer(), // this is on purpose doubled operator
+        operator.publicKey.toBuffer(), // this is on purpose doubled operator
+      ],
       program.programId
     );
 
-    const pdaList = [...paramPdas, operatorAsAgentPda];
+    const [agentInstancesPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from('agent_instances_index'),
+        serviceId.toArrayLike(Buffer, 'le', 16),
+      ],
+      program.programId
+    );
+
+    const pdaList = [...paramPdas, operatorAsAgentPda, agentInstancesPda];
 
     for (let i = 0; i < agentsToRegister; i++) {
       const agentId = new anchor.BN(agent_ids[i]);
       const agentInstance = anchor.web3.Keypair.generate();
       agentInstances.push(agentInstance);
       agentInstancePubkeys.push(agentInstance.publicKey);
-
-      const [agentInstancesPda] = anchor.web3.PublicKey.findProgramAddressSync(
-        [
-          Buffer.from('agent_instances_index'),
-          serviceId.toArrayLike(Buffer, 'le', 16),
-          agentId.toArrayLike(Buffer, 'le', 4),
-        ],
-        program.programId
-      );
 
       const [slotCounterPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
@@ -2604,7 +2597,6 @@ describe('registry', () => {
         );
 
       pdaList.push(
-        agentInstancesPda,
         slotCounterPda,
         serviceAgentInstancePda,
         operatorAgentInstancePda
@@ -2693,8 +2685,23 @@ describe('registry', () => {
     );
 
     const slotCounterAccounts = [];
-    const serviceAgentInstanceIndexAccounts = [];
     const serviceAgentInstancePDAs = [];
+
+    const [agentInstancesPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from('agent_instances_index'),
+        serviceId.toArrayLike(Buffer, 'le', 16),
+      ],
+      program.programId
+    );
+
+    const serviceAgentInstancesIndex =
+      await program.account.serviceAgentInstancesIndex.fetch(agentInstancesPda);
+
+    assert.equal(
+      agentInstances.map((k) => k.publicKey).length,
+      serviceAgentInstancesIndex.serviceAgentInstances.length
+    );
 
     for (const agent_id of agent_ids) {
       const agentId = new anchor.BN(agent_id);
@@ -2711,30 +2718,6 @@ describe('registry', () => {
         isSigner: false,
         isWritable: true,
       });
-
-      const [agentInstancesPda] = anchor.web3.PublicKey.findProgramAddressSync(
-        [
-          Buffer.from('agent_instances_index'),
-          serviceId.toArrayLike(Buffer, 'le', 16),
-          agentId.toArrayLike(Buffer, 'le', 4),
-        ],
-        program.programId
-      );
-      serviceAgentInstanceIndexAccounts.push({
-        pubkey: agentInstancesPda,
-        isSigner: false,
-        isWritable: true,
-      });
-
-      const serviceAgentInstancesIndex =
-        await program.account.serviceAgentInstancesIndex.fetch(
-          agentInstancesPda
-        );
-
-      assert.equal(
-        agentInstances.map((k) => k.publicKey).length,
-        serviceAgentInstancesIndex.serviceAgentInstances.length
-      );
 
       for (const agentInstance of serviceAgentInstancesIndex.serviceAgentInstances) {
         const [serviceAgentInstancePda] =
@@ -2766,15 +2749,128 @@ describe('registry', () => {
         registryWallet: programWalletPda,
       })
       .remainingAccounts([
+        {
+          pubkey: agentInstancesPda,
+          isSigner: false,
+          isWritable: true,
+        },
         ...slotCounterAccounts,
-        ...serviceAgentInstanceIndexAccounts,
         ...serviceAgentInstancePDAs,
       ])
-      .signers([manager, ownerService])
+      .signers([manager])
       .rpc();
 
     return {
       serviceAgentIdsIndexPDA,
     };
+  }
+
+  async function deployService({
+    program,
+    registryAccount,
+    serviceId,
+    servicePda,
+    multisigImplementation,
+    ownerRegistry,
+    ownerService,
+    manager,
+    agentInstances,
+  }) {
+    // Find the registry multisig PDA
+    const [registryMultisigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from('registry_multisig'), registryAccount.publicKey.toBuffer()],
+      program.programId
+    );
+
+    // Whitelist the multisig implementation
+    await program.methods
+      .changeMultisigPermission(multisigImplementation.publicKey, true)
+      .accounts({
+        registry: registryAccount.publicKey,
+        registryMultisig: registryMultisigPda,
+        user: ownerRegistry.publicKey,
+      })
+      .signers([ownerRegistry])
+      .rpc();
+
+    const remainingAccounts = [];
+
+    // Get agent instances PDA
+    const [agentInstancesPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from('agent_instances_index'),
+        serviceId.toArrayLike(Buffer, 'le', 16),
+      ],
+      program.programId
+    );
+
+    const serviceAgentInstancesIndex =
+      await program.account.serviceAgentInstancesIndex.fetch(agentInstancesPda);
+
+    // serviceAgentInstancesIndex is already passed as a parameter, no need to fetch it again
+    const serviceAgentInstances =
+      serviceAgentInstancesIndex.serviceAgentInstances;
+
+    // Create the seed data based on agent instances
+    let seedData = Buffer.concat(
+      serviceAgentInstances.map((agent) => agent.toBuffer())
+    );
+
+    // Hash the seed data
+    const multisig_hash = sha256(seedData);
+
+    // Create the seeds for the multisig PDA
+    const seeds = [Buffer.from('multisig'), Buffer.from(multisig_hash)];
+
+    // Generate the multisig PDA from the hash and the multisig implementation
+    const [multisigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      seeds,
+      program.programId
+    );
+
+    // Add multisig PDA to remaining accounts
+    remainingAccounts.push({
+      pubkey: multisigPda,
+      isWritable: true,
+      isSigner: false,
+    });
+
+    // Add agent instances to remaining accounts
+    for (const serviceAgentInstance of serviceAgentInstances) {
+      try {
+        remainingAccounts.push({
+          pubkey: serviceAgentInstance,
+          isWritable: false,
+          isSigner: false,
+        });
+      } catch (e) {
+        console.warn(
+          'Invalid PDA in index:',
+          serviceAgentInstance.toBase58(),
+          e
+        );
+      }
+    }
+
+    // Ensure the correct number of remaining accounts
+    if (remainingAccounts.length !== agentInstances.length + 1) {
+      throw new Error('Remaining accounts length mismatch');
+    }
+
+    // Deploy the service
+    await program.methods
+      .deploy(serviceId, multisigImplementation.publicKey, Buffer.from([]))
+      .accounts({
+        registry: registryAccount.publicKey,
+        service: servicePda,
+        serviceOwner: ownerService.publicKey,
+        registryMultisig: registryMultisigPda,
+        user: manager.publicKey,
+      })
+      .remainingAccounts(remainingAccounts)
+      .signers([manager])
+      .rpc();
+
+    return multisigPda;
   }
 });
