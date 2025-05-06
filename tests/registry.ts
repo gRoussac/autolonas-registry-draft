@@ -1801,10 +1801,10 @@ describe('registry', () => {
     });
 
     it('Deploys a service', async function () {
-      const agent_ids_per_service = 1;
-      const threshold = 1;
-      const agentsToRegister = 1;
-      const config_hash = new Uint8Array(32).fill(19);
+      const agent_ids_per_service = 4;
+      const threshold = 3;
+      const agentsToRegister = 3;
+      const config_hash = new Uint8Array(32).fill(17);
 
       // Register agents and get setup info
       const {
@@ -1822,26 +1822,6 @@ describe('registry', () => {
         threshold,
         agentsToRegister
       );
-
-      const [registryMultisigPda] =
-        anchor.web3.PublicKey.findProgramAddressSync(
-          [
-            Buffer.from('registry_multisig'),
-            registryAccount.publicKey.toBuffer(),
-          ],
-          program.programId
-        );
-
-      // Whitelist the multisig implementation
-      await program.methods
-        .changeMultisigPermission(multisigImplementation.publicKey, true)
-        .accounts({
-          registry: registryAccount.publicKey,
-          registryMultisig: registryMultisigPda,
-          user: ownerRegistry.publicKey,
-        })
-        .signers([ownerRegistry])
-        .rpc();
 
       // Call the deployService function
       const multisigPda = await deployService({
@@ -1868,7 +1848,7 @@ describe('registry', () => {
       const agent_ids_per_service = 1;
       const threshold = 1;
       const agentsToRegister = 1;
-      const config_hash = new Uint8Array(32).fill(17);
+      const config_hash = new Uint8Array(32).fill(18);
 
       const { serviceId, servicePda, agentInstances, programWalletPda } =
         await registerMultipleAgentInstances(
@@ -1878,6 +1858,18 @@ describe('registry', () => {
           threshold,
           agentsToRegister
         );
+
+      await deployService({
+        program,
+        registryAccount,
+        serviceId,
+        servicePda,
+        multisigImplementation,
+        ownerRegistry,
+        ownerService,
+        manager,
+        agentInstances,
+      });
 
       const serviceOwnerBalanceBefore = await provider.connection.getBalance(
         ownerService.publicKey
@@ -1923,7 +1915,7 @@ describe('registry', () => {
       const agent_ids_per_service = 1;
       const threshold = 1;
       const agentsToRegister = 1;
-      const config_hash = new Uint8Array(32).fill(18);
+      const config_hash = new Uint8Array(32).fill(19);
 
       const {
         serviceId,
@@ -1940,6 +1932,18 @@ describe('registry', () => {
         threshold,
         agentsToRegister
       );
+
+      await deployService({
+        program,
+        registryAccount,
+        serviceId,
+        servicePda,
+        multisigImplementation,
+        ownerRegistry,
+        ownerService,
+        manager,
+        agentInstances,
+      });
 
       await terminateService({
         program,
