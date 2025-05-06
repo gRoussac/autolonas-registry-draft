@@ -80,3 +80,24 @@ pub struct DeployServiceEvent {
     pub service_id: u128,
     pub multisig: Pubkey,
 }
+
+#[event]
+pub struct OwnerUpdatedEvent {
+    pub new_owner: Pubkey,
+}
+
+#[event]
+pub struct ManagerUpdatedEvent {
+    pub new_manager: Pubkey,
+}
+
+#[event]
+pub struct MultisigUpdatedEvent {
+    pub service_id: u128,
+    pub new_multisig: Pubkey,
+}
+
+#[event]
+pub struct BaseURIChanged {
+    pub new_base_uri: String,
+}

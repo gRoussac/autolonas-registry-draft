@@ -425,6 +425,95 @@ pub mod registry {
         Ok(())
     }
 
+    pub fn change_owner(ctx: Context<ChangeOwner>, new_owner: Pubkey) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+
+        // Only current owner can call
+        if ctx.accounts.user.key() != registry.owner {
+            return Err(Error::from(ProgramError::IllegalOwner));
+        }
+
+        // Cannot set zero address
+        if new_owner == Pubkey::default() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        // Update the owner
+        registry.owner = new_owner;
+
+        emit!(OwnerUpdatedEvent { new_owner });
+
+        Ok(())
+    }
+
+    pub fn change_manager(ctx: Context<ChangeManager>, new_manager: Pubkey) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+
+        // Only current owner can call
+        if ctx.accounts.user.key() != registry.owner {
+            return Err(Error::from(ProgramError::IllegalOwner));
+        }
+
+        // Cannot set zero address
+        if new_manager == Pubkey::default() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        // Update the owner
+        registry.manager = new_manager;
+
+        emit!(ManagerUpdatedEvent { new_manager });
+
+        Ok(())
+    }
+
+    pub fn set_base_uri(ctx: Context<ChangeManager>, new_base_uri: String) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+
+        // Only current owner can call
+        if ctx.accounts.user.key() != registry.owner {
+            return Err(Error::from(ProgramError::IllegalOwner));
+        }
+
+        // Cannot set zero address
+        if new_base_uri.is_empty() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        // Update the owner
+        registry.base_uri = new_base_uri.clone();
+
+        emit!(BaseURIChanged { new_base_uri });
+
+        Ok(())
+    }
+
+    // ! TODO This function is for bypassing mulitisg in tests, shall be remove
+    // ! ONLY ALLOW THIS IN TEST ENV
+    #[cfg(feature = "test-env")]
+    pub fn change_multisig(ctx: Context<ChangeMultiSig>, new_multisig: Pubkey) -> Result<()> {
+        let service = &mut ctx.accounts.service;
+
+        // Only current service owner can call
+        if ctx.accounts.user.key() != service.service_owner {
+            return Err(Error::from(ProgramError::IllegalOwner));
+        }
+
+        // Cannot set zero address
+        if new_multisig == Pubkey::default() {
+            return Err(ProgramError::InvalidArgument.into());
+        }
+
+        // Update the service multisig !!!
+        service.multisig = new_multisig;
+
+        emit!(MultisigUpdatedEvent {
+            service_id: service.service_id,
+            new_multisig
+        });
+        Ok(())
+    }
+
     pub fn drain(ctx: Context<Drain>) -> Result<u64> {
         let registry = &mut ctx.accounts.registry;
         let drainer = &ctx.accounts.drainer;
@@ -1835,6 +1924,27 @@ pub struct ChangeDrainer<'info> {
     #[account(mut)]
     pub registry: Account<'info, ServiceRegistry>,
     #[account(address = registry.owner)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ChangeOwner<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, ServiceRegistry>,
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ChangeManager<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, ServiceRegistry>,
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ChangeMultiSig<'info> {
+    #[account(mut)]
+    pub service: Account<'info, ServiceAccount>,
     pub user: Signer<'info>,
 }
 

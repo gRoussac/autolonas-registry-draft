@@ -74,7 +74,7 @@ describe('registry', () => {
       // Airdrop to ownerRegistry
       let airdropSignature = await connection.requestAirdrop(
         ownerRegistry.publicKey,
-        2 * anchor.web3.LAMPORTS_PER_SOL
+        200 * anchor.web3.LAMPORTS_PER_SOL
       );
       await connection.confirmTransaction(airdropSignature);
 
@@ -96,13 +96,13 @@ describe('registry', () => {
 
       airdropSignature = await connection.requestAirdrop(
         manager.publicKey,
-        40 * anchor.web3.LAMPORTS_PER_SOL
+        200 * anchor.web3.LAMPORTS_PER_SOL
       );
       await connection.confirmTransaction(airdropSignature);
 
       airdropSignature = await connection.requestAirdrop(
         ownerService.publicKey,
-        20 * anchor.web3.LAMPORTS_PER_SOL
+        200 * anchor.web3.LAMPORTS_PER_SOL
       );
       await connection.confirmTransaction(airdropSignature);
     });
@@ -1844,6 +1844,109 @@ describe('registry', () => {
       assert.equal(updatedService.multisig.toBase58(), multisigPda.toBase58());
     });
 
+    it('Slashes agent instances', async function () {
+      const agent_ids_per_service = 4;
+      const threshold = 3;
+      const agentsToRegister = 3;
+      const agentsToSlash = 2;
+      const slashAmount = 0.1 * anchor.web3.LAMPORTS_PER_SOL;
+      const config_hash = new Uint8Array(32).fill(20);
+
+      const {
+        serviceId,
+        servicePda,
+        agentInstances,
+        operator,
+        programWalletPda,
+        operatorBondPda,
+      } = await registerMultipleAgentInstances(
+        registryAccount,
+        config_hash,
+        agent_ids_per_service,
+        threshold,
+        agentsToRegister
+      );
+
+      // Fetch bond before slashing
+      const bondBefore =
+        await program.account.operatorBondAccount.fetch(operatorBondPda);
+
+      const registryBefore = await program.account.serviceRegistry.fetch(
+        registryAccount.publicKey
+      );
+
+      //console.debug(bondBefore.bond.toNumber());
+
+      let eventReceived: any = null;
+
+      const listener = program.addEventListener(
+        'operatorSlashed',
+        (event, _slot) => {
+          eventReceived = event;
+        }
+      );
+
+      await deployService({
+        program,
+        registryAccount,
+        serviceId,
+        servicePda,
+        multisigImplementation,
+        ownerRegistry,
+        ownerService,
+        manager,
+        agentInstances,
+      });
+
+      await slashAgents({
+        registryAccount,
+        serviceId,
+        agentInstances: agentInstances.slice(0, agentsToSlash),
+        amounts: new Array(agentsToSlash).fill(slashAmount),
+        operator,
+        registryWallet: programWalletPda,
+        servicePda,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await program.removeEventListener(listener);
+
+      //console.debug(eventReceived);
+
+      expect(eventReceived).to.not.be.null;
+      expect(eventReceived.operator.toBase58()).to.equal(
+        operator.publicKey.toBase58()
+      );
+      expect(eventReceived.serviceId.toString()).to.equal(serviceId.toString());
+      expect(eventReceived.amount.toNumber()).to.equal(slashAmount);
+
+      // Fetch bond after slashing
+      const bondAfter =
+        await program.account.operatorBondAccount.fetch(operatorBondPda);
+
+      const registryAfter = await program.account.serviceRegistry.fetch(
+        registryAccount.publicKey
+      );
+
+      // Check operatorBondAccount fields
+      expect(bondAfter.operator.equals(operator.publicKey)).to.be.true;
+      expect(bondAfter.serviceId.toString()).to.equal(serviceId.toString());
+
+      // console.debug(bondAfter.bond.toNumber());
+
+      // Check bond reduction
+      const totalSlashed = slashAmount * agentsToSlash;
+      expect(bondBefore.bond.toNumber() - bondAfter.bond.toNumber()).to.equal(
+        totalSlashed
+      );
+
+      // Check registry slashed_funds increase
+      expect(
+        registryAfter.slashedFunds.toNumber() -
+          registryBefore.slashedFunds.toNumber()
+      ).to.equal(totalSlashed);
+    });
+
     it('Terminates a service', async () => {
       const agent_ids_per_service = 1;
       const threshold = 1;
@@ -2051,75 +2154,14 @@ describe('registry', () => {
       );
       expect(deletedAccount).to.be.null;
     });
-  });
 
-  describe('Registry Drainer Tests', () => {
-    let registryAccount: anchor.web3.Keypair;
-
-    before(async function () {
-      registryAccount = anchor.web3.Keypair.generate();
-
-      // Airdrop to user (the current owner)
-      let airdropSignature = await connection.requestAirdrop(
-        ownerRegistry.publicKey,
-        2 * anchor.web3.LAMPORTS_PER_SOL
-      );
-      await connection.confirmTransaction(airdropSignature);
-
-      airdropSignature = await connection.requestAirdrop(
-        manager.publicKey,
-        20 * anchor.web3.LAMPORTS_PER_SOL
-      );
-      await connection.confirmTransaction(airdropSignature);
-
-      // Initialize the registry (assuming the registry initialization is similar to previous tests)
-      await program.methods
-        .initialize(
-          name,
-          symbol,
-          base_uri,
-          manager.publicKey,
-          drainer.publicKey
-        )
-        .accounts({
-          registry: registryAccount.publicKey,
-          user: ownerRegistry.publicKey,
-        })
-        .signers([ownerRegistry, registryAccount])
-        .rpc();
-    });
-
-    it('Changes the drainer of the registry', async function () {
-      const anotherDrainer = anchor.web3.Keypair.generate().publicKey;
-      try {
-        await program.methods
-          .changeDrainer(anotherDrainer)
-          .accounts({
-            registry: registryAccount.publicKey,
-            user: ownerRegistry.publicKey,
-          })
-          .signers([ownerRegistry])
-          .rpc();
-      } catch (error) {
-        console.error('Transaction failed:', error);
-      }
-
-      // Fetch the updated registry account
-      const registry = await program.account.serviceRegistry.fetch(
-        registryAccount.publicKey
-      );
-
-      // Check that the drainer has been updated correctly
-      expect(registry.drainer.toBase58()).to.equal(anotherDrainer.toBase58());
-    });
-
-    it.skip('Slashes agent instances', async function () {
-      const agent_ids_per_service = 9;
-      const threshold = 7;
+    it('Drains the registry slashed funds', async function () {
+      const agent_ids_per_service = 4;
+      const threshold = 3;
       const agentsToRegister = 3;
       const agentsToSlash = 2;
       const slashAmount = 0.1 * anchor.web3.LAMPORTS_PER_SOL;
-      const config_hash = new Uint8Array(32).fill(19);
+      const config_hash = new Uint8Array(32).fill(21);
 
       const {
         serviceId,
@@ -2127,7 +2169,6 @@ describe('registry', () => {
         agentInstances,
         operator,
         programWalletPda,
-        operatorBondPda,
       } = await registerMultipleAgentInstances(
         registryAccount,
         config_hash,
@@ -2136,95 +2177,17 @@ describe('registry', () => {
         agentsToRegister
       );
 
-      // Fetch bond before slashing
-      const bondBefore =
-        await program.account.operatorBondAccount.fetch(operatorBondPda);
-
-      const registryBefore = await program.account.serviceRegistry.fetch(
-        registryAccount.publicKey
-      );
-
-      //console.debug(bondBefore.bond.toNumber());
-
-      let eventReceived: any = null;
-
-      const listener = program.addEventListener(
-        'operatorSlashed',
-        (event, _slot) => {
-          eventReceived = event;
-        }
-      );
-
-      await slashAgents({
+      await deployService({
+        program,
         registryAccount,
         serviceId,
-        agentInstances: agentInstances.slice(0, agentsToSlash),
-        amounts: new Array(agentsToSlash).fill(slashAmount),
-        operator,
-        registryWallet: programWalletPda,
         servicePda,
+        multisigImplementation,
+        ownerRegistry,
+        ownerService,
+        manager,
+        agentInstances,
       });
-
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      await program.removeEventListener(listener);
-
-      //console.debug(eventReceived);
-
-      expect(eventReceived).to.not.be.null;
-      expect(eventReceived.operator.toBase58()).to.equal(
-        operator.publicKey.toBase58()
-      );
-      expect(eventReceived.serviceId.toString()).to.equal(serviceId.toString());
-      expect(eventReceived.amount.toNumber()).to.equal(slashAmount);
-
-      // Fetch bond after slashing
-      const bondAfter =
-        await program.account.operatorBondAccount.fetch(operatorBondPda);
-
-      const registryAfter = await program.account.serviceRegistry.fetch(
-        registryAccount.publicKey
-      );
-
-      // Check operatorBondAccount fields
-      expect(bondAfter.operator.equals(operator.publicKey)).to.be.true;
-      expect(bondAfter.serviceId.toString()).to.equal(serviceId.toString());
-
-      // console.debug(bondAfter.bond.toNumber());
-
-      // Check bond reduction
-      const totalSlashed = slashAmount * agentsToSlash;
-      expect(bondBefore.bond.toNumber() - bondAfter.bond.toNumber()).to.equal(
-        totalSlashed
-      );
-
-      // Check registry slashed_funds increase
-      expect(
-        registryAfter.slashedFunds.toNumber() -
-          registryBefore.slashedFunds.toNumber()
-      ).to.equal(totalSlashed);
-    });
-
-    it.skip('Drains the registry slashed funds', async function () {
-      const agent_ids_per_service = 9;
-      const threshold = 7;
-      const agentsToRegister = 3;
-      const agentsToSlash = 2;
-      const slashAmount = 0.1 * anchor.web3.LAMPORTS_PER_SOL;
-      const config_hash = new Uint8Array(32).fill(19);
-
-      const {
-        serviceId,
-        servicePda,
-        agentInstances,
-        operator,
-        programWalletPda,
-      } = await registerMultipleAgentInstances(
-        registryAccount,
-        config_hash,
-        agent_ids_per_service,
-        threshold,
-        agentsToRegister
-      );
 
       // Slashing agents to add funds to the registry's slashed funds
       await slashAgents({
@@ -2278,6 +2241,136 @@ describe('registry', () => {
 
       // Check that slashed funds have been drained
       expect(registry.slashedFunds.toNumber()).to.equal(0);
+    });
+  });
+
+  describe('Registry Admin Tests', () => {
+    let registryAccount: anchor.web3.Keypair;
+
+    before(async function () {
+      registryAccount = anchor.web3.Keypair.generate();
+
+      let airdropSignature = await connection.requestAirdrop(
+        ownerRegistry.publicKey,
+        200 * anchor.web3.LAMPORTS_PER_SOL
+      );
+      await connection.confirmTransaction(airdropSignature);
+
+      airdropSignature = await connection.requestAirdrop(
+        manager.publicKey,
+        200 * anchor.web3.LAMPORTS_PER_SOL
+      );
+      await connection.confirmTransaction(airdropSignature);
+
+      // Initialize the registry (assuming the registry initialization is similar to previous tests)
+      await program.methods
+        .initialize(
+          name,
+          symbol,
+          base_uri,
+          manager.publicKey,
+          drainer.publicKey
+        )
+        .accounts({
+          registry: registryAccount.publicKey,
+          user: ownerRegistry.publicKey,
+        })
+        .signers([ownerRegistry, registryAccount])
+        .rpc();
+    });
+
+    it('Changes the drainer of the registry', async function () {
+      const anotherDrainer = anchor.web3.Keypair.generate().publicKey;
+      try {
+        await program.methods
+          .changeDrainer(anotherDrainer)
+          .accounts({
+            registry: registryAccount.publicKey,
+            user: ownerRegistry.publicKey,
+          })
+          .signers([ownerRegistry])
+          .rpc();
+      } catch (error) {
+        console.error('Transaction failed:', error);
+      }
+
+      // Fetch the updated registry account
+      const registry = await program.account.serviceRegistry.fetch(
+        registryAccount.publicKey
+      );
+
+      // Check that the drainer has been updated correctly
+      expect(registry.drainer.toBase58()).to.equal(anotherDrainer.toBase58());
+    });
+
+    it('Changes the owner of the registry', async function () {
+      const newOwner = anchor.web3.Keypair.generate();
+      await program.methods
+        .changeOwner(newOwner.publicKey)
+        .accounts({
+          registry: registryAccount.publicKey,
+          user: ownerRegistry.publicKey,
+        })
+        .signers([ownerRegistry])
+        .rpc();
+
+      // Fetch the updated registry account
+      const registry = await program.account.serviceRegistry.fetch(
+        registryAccount.publicKey
+      );
+
+      // Check that the owner has been updated correctly
+      expect(registry.owner.toBase58()).to.equal(newOwner.publicKey.toBase58());
+
+      // Revert change for other tests
+      await program.methods
+        .changeOwner(ownerRegistry.publicKey)
+        .accounts({
+          registry: registryAccount.publicKey,
+          user: newOwner.publicKey,
+        })
+        .signers([newOwner])
+        .rpc();
+    });
+
+    it('Changes the manager of the registry', async function () {
+      const newManager = anchor.web3.Keypair.generate().publicKey;
+      await program.methods
+        .changeManager(newManager)
+        .accounts({
+          registry: registryAccount.publicKey,
+          user: ownerRegistry.publicKey,
+        })
+        .signers([ownerRegistry])
+        .rpc();
+
+      // Fetch the updated registry account
+      const registry = await program.account.serviceRegistry.fetch(
+        registryAccount.publicKey
+      );
+
+      // Check that the owner has been updated correctly
+      expect(registry.manager.toBase58()).to.equal(newManager.toBase58());
+    });
+
+    it('Changes the base uri of the registry', async function () {
+      const new_base_uri = 'new_base_uri';
+      await program.methods
+        .setBaseUri(new_base_uri)
+        .accounts({
+          registry: registryAccount.publicKey,
+          user: ownerRegistry.publicKey,
+        })
+        .signers([ownerRegistry])
+        .rpc();
+
+      // Fetch the updated registry account
+      const registry = await program.account.serviceRegistry.fetch(
+        registryAccount.publicKey
+      );
+
+      // Check that the owner has been updated correctly
+      expect(registry.baseUri).to.equal(new_base_uri);
     });
   });
 
@@ -2339,6 +2432,21 @@ describe('registry', () => {
     };
   }
 
+  // Only test function
+  async function changeTestMultisig(servicePda: anchor.web3.PublicKey) {
+    const new_multisig = anchor.web3.Keypair.generate();
+    await program.methods
+      .changeMultisig(new_multisig.publicKey)
+      .accounts({
+        service: servicePda,
+        user: ownerService.publicKey,
+      })
+      .signers([ownerService])
+      .rpc();
+
+    return new_multisig;
+  }
+
   async function slashAgents({
     registryAccount,
     serviceId,
@@ -2380,6 +2488,14 @@ describe('registry', () => {
 
     // console.debug(amounts);
 
+    // console.debug(agentInstances);
+
+    const serviceAccount =
+      await program.account.serviceAccount.fetch(servicePda);
+
+    // Only test function
+    const new_multisig = await changeTestMultisig(servicePda);
+
     await program.methods
       .slash(
         serviceIdBn,
@@ -2388,14 +2504,14 @@ describe('registry', () => {
       )
       .accounts({
         registry: registryAccount.publicKey,
-        registryWallet,
         service: servicePda,
-        user: multisigImplementation.publicKey,
+        registryWallet,
+        user: new_multisig.publicKey,
       })
       .remainingAccounts(
         agentInstances.flatMap((_, i) => [
           {
-            pubkey: operatorAgentInstancePdas[i],
+            pubkey: operatorAgentInstancePdas[i][0],
             isWritable: false,
             isSigner: false,
           },
@@ -2406,7 +2522,7 @@ describe('registry', () => {
           },
         ])
       )
-      .signers([multisigImplementation])
+      .signers([new_multisig])
       .rpc();
   }
 
